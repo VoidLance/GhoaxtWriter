@@ -39,6 +39,18 @@ flatpak run dev.ghoaxtwriter.app
 
 The Flatpak needs the GNOME 50 runtime (installed automatically from Flathub if the Flathub remote is configured). Don't run it at the same time as the installer version; they share the same profile and local port.
 
+## Installation (Windows x64)
+
+1. Download `win-x64-GhoaxtWriter-Setup.zip` from the [latest release](https://github.com/VoidLance/GhoaxtWriter/releases).
+2. Extract the zip and run `GhoaxtWriter-Setup.exe`.
+3. The app is not code-signed, so Windows SmartScreen may warn you. Choose **More info**, then **Run anyway**.
+
+## Installation (macOS, Apple Silicon)
+
+1. Download `macos-arm64-GhoaxtWriter.dmg` from the [latest release](https://github.com/VoidLance/GhoaxtWriter/releases).
+2. Open the disk image and drag GhoaxtWriter into Applications.
+3. The app is not code-signed, so the first time, right-click it and choose **Open**, then confirm.
+
 ## License
 
 No license has been chosen yet; all rights reserved unless stated otherwise.
