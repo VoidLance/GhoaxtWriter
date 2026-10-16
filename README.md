@@ -43,7 +43,7 @@ To build the bundle yourself, install `org.flatpak.Builder` and the `org.gnome.P
 
 ## Windows and macOS
 
-Icons for both platforms are configured (`assets/icon.ico`, `assets/icon.iconset`), but each platform's package must be built on that OS with `hutch run build`.
+Icons for both platforms are configured (`assets/icon.ico`, `assets/icon.iconset`). Each platform is built on its own OS: run the "Build desktop apps" workflow from the GitHub Actions tab (macOS arm64 and Windows x64 runners), or `hutch run build` locally on that OS.
 
 ## Building from source
 
