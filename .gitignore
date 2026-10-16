@@ -4,3 +4,6 @@ build/
 dist/
 artifacts/
 *.tsbuildinfo
+.cottontail-tmp/
+installer
+README.txt

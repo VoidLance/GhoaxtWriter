@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import NovelCover, { pickCoverImage } from "./Cover";
 import NovelSettings from "./NovelSettings";
+import type { Goals } from "./goals";
 
 export type NovelMeta = {
   title: string;
@@ -8,8 +9,11 @@ export type NovelMeta = {
   author: string;
   genre: string;
   description: string;
-  cover: { seed: number; image: string | null };
+  cover: { seed: number; image: string | null; template?: string; palette?: number };
   createdAt: string;
+  goals?: Goals;
+  // Maps a date to the novel's word total at the start of that day.
+  progress?: Record<string, number>;
 };
 
 export type NovelEntry = { path: string; shelf: string | null; meta: NovelMeta };
@@ -48,13 +52,14 @@ function Library({ apiFetch, onOpen, onStatus, buttonClass, className }: Library
   }
 
   function regenerate(novel: NovelEntry) {
-    void updateCover(novel, { seed: Math.floor(Math.random() * 1_000_000), image: null });
+    // A new seed reshuffles the design and colours; the chosen template stays.
+    void updateCover(novel, { ...novel.meta.cover, seed: Math.floor(Math.random() * 1_000_000), image: null, palette: undefined });
   }
 
   async function importImage(novel: NovelEntry) {
     try {
       const image = await pickCoverImage(apiFetch);
-      if (image) await updateCover(novel, { seed: novel.meta.cover.seed, image });
+      if (image) await updateCover(novel, { ...novel.meta.cover, image });
     } catch (error) {
       console.error(error);
       onStatus("Unable to import that image.");
@@ -201,7 +206,7 @@ function Library({ apiFetch, onOpen, onStatus, buttonClass, className }: Library
                 }}
               >
                 <button type="button" onClick={() => onOpen(novel)} className="block p-0 border-0 bg-transparent" title="Open (⋯ or right-click for options)">
-                  <NovelCover title={novel.meta.title} subtitle={novel.meta.subtitle} author={novel.meta.author} seed={novel.meta.cover.seed} image={novel.meta.cover.image} />
+                  <NovelCover title={novel.meta.title} subtitle={novel.meta.subtitle} author={novel.meta.author} seed={novel.meta.cover.seed} image={novel.meta.cover.image} template={novel.meta.cover.template} palette={novel.meta.cover.palette} />
                 </button>
                 <button
                   type="button"
@@ -247,7 +252,7 @@ function Library({ apiFetch, onOpen, onStatus, buttonClass, className }: Library
             { label: "Novel settings…", run: () => setSettingsFor(menu.novel) },
             { label: "Generate new cover", run: () => regenerate(menu.novel) },
             { label: "Import image from computer…", run: () => void importImage(menu.novel) },
-            ...(menu.novel.meta.cover.image ? [{ label: "Remove imported image", run: () => void updateCover(menu.novel, { seed: menu.novel.meta.cover.seed, image: null }) }] : []),
+            ...(menu.novel.meta.cover.image ? [{ label: "Remove imported image", run: () => void updateCover(menu.novel, { ...menu.novel.meta.cover, image: null }) }] : []),
           ].map((item) => (
             <button
               key={item.label}

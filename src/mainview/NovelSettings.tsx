@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import NovelCover, { pickCoverImage } from "./Cover";
+import NovelCover, { COVER_PALETTES, COVER_TEMPLATES, paletteFor, pickCoverImage, templateFor } from "./Cover";
 import type { NovelEntry, NovelMeta } from "./Library";
 
 type Props = {
@@ -42,10 +42,32 @@ function NovelSettings({ novel, apiFetch, onSaved, onClose, buttonClass }: Props
 
   return (
     <div className="fixed inset-0 flex items-center justify-center" style={{ background: "rgba(0,0,0,0.6)", zIndex: 60 }} onClick={onClose}>
-      <div className="bg-slate-900 text-slate-100 rounded-xl border border-slate-700 p-6 flex gap-6" style={{ width: 720, maxHeight: "90vh", overflow: "auto" }} onClick={(event) => event.stopPropagation()}>
-        <div className="flex flex-col gap-2" style={{ width: 160 }}>
-          <NovelCover title={meta.title} subtitle={meta.subtitle} author={meta.author} seed={meta.cover.seed} image={meta.cover.image} />
-          <button type="button" className="px-3 py-2 rounded-lg border border-slate-700" onClick={() => setMeta({ ...meta, cover: { seed: Math.floor(Math.random() * 1_000_000), image: null } })}>New cover</button>
+      <div className="bg-slate-900 text-slate-100 rounded-xl border border-slate-700 p-6 flex gap-6" style={{ width: 880, maxHeight: "90vh", overflow: "auto" }} onClick={(event) => event.stopPropagation()}>
+        <div className="flex flex-col gap-2" style={{ width: 260 }}>
+          <div style={{ alignSelf: "center" }}>
+            <NovelCover title={meta.title} subtitle={meta.subtitle} author={meta.author} seed={meta.cover.seed} image={meta.cover.image} template={meta.cover.template} palette={meta.cover.palette} width={180} />
+          </div>
+          <div style={label}>Template</div>
+          <div className="grid" style={{ gridTemplateColumns: "repeat(5, 1fr)", gap: 6 }}>
+            {COVER_TEMPLATES.map((entry) => {
+              const active = !meta.cover.image && templateFor(meta.cover.seed, meta.cover.template) === entry.id;
+              return (
+                <button key={entry.id} type="button" title={entry.label} onClick={() => setMeta({ ...meta, cover: { ...meta.cover, template: entry.id, image: null } })} className="p-0 bg-transparent rounded-md" style={{ border: `2px solid ${active ? "#f59e0b" : "transparent"}` }}>
+                  <NovelCover title={meta.title} subtitle={meta.subtitle} author={meta.author} seed={meta.cover.seed} image={null} template={entry.id} palette={meta.cover.palette} width={44} />
+                </button>
+              );
+            })}
+          </div>
+          <div style={label}>Colours</div>
+          <div className="flex flex-wrap gap-2">
+            {COVER_PALETTES.map((palette, index) => {
+              const active = !meta.cover.image && paletteFor(meta.cover.seed, meta.cover.palette) === index;
+              return (
+                <button key={palette.name} type="button" title={palette.name} onClick={() => setMeta({ ...meta, cover: { ...meta.cover, palette: index, image: null } })} className="p-0" style={{ width: 24, height: 24, borderRadius: 12, background: `linear-gradient(135deg, ${palette.bg2} 50%, ${palette.accent} 50%)`, border: `2px solid ${active ? "#f59e0b" : "rgba(148,163,184,0.4)"}` }} />
+              );
+            })}
+          </div>
+          <button type="button" className="px-3 py-2 rounded-lg border border-slate-700" onClick={() => setMeta({ ...meta, cover: { ...meta.cover, seed: Math.floor(Math.random() * 1_000_000), image: null, palette: undefined } })}>New cover</button>
           <button type="button" className="px-3 py-2 rounded-lg border border-slate-700" onClick={() => void pickCoverImage(apiFetch).then((image) => image && setMeta((prev) => ({ ...prev, cover: { ...prev.cover, image } }))).catch(() => setError("Unable to import that image."))}>Import image…</button>
           {meta.cover.image && (
             <button type="button" className="px-3 py-2 rounded-lg border border-slate-700" onClick={() => setMeta({ ...meta, cover: { ...meta.cover, image: null } })}>Use generated cover</button>

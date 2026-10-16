@@ -1,7 +1,17 @@
-import { marked } from "marked";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Library, { type NovelEntry } from "./Library";
 import NovelSettings from "./NovelSettings";
+import { LiveEditor, type EditorHandle, type VimMode } from "./LiveEditor";
+import { Menubar, type MenuDef, type MenuItem } from "./Menubar";
+import { FindPanel, InfoDialog, keyCombo, MarkdownGuide, ShortcutsDialog, type SearchHit } from "./Dialogs";
+import { formatWords, usePrefs, type Tab } from "./prefs";
+import { SettingsPanel } from "./SettingsPanel";
+import { ExportDialog, type ExportOptions } from "./ExportDialog";
+import { GoalsDialog } from "./GoalsDialog";
+import { FormatDialog } from "./FormatDialog";
+import { ImportDialog } from "./ImportDialog";
+import { dailyTarget, todayKey, type Goals } from "./goals";
+import { defaultTypography, ensureTypography, withTypography } from "./typography";
 import { type ElementItem, loadElements, novelFileUrl, post } from "./api";
 import Elements from "./Elements";
 import Planning from "./Planning";
@@ -39,7 +49,7 @@ button {
 }
 `;
 
-const defaultMarkdownCss = `
+const baseMarkdownCss = `
 .markdown-body {
   font-family: "Georgia", "Iowan Old Style", serif;
   line-height: 1.75;
@@ -74,6 +84,8 @@ const defaultMarkdownCss = `
   padding: 0.1rem 0.35rem;
 }
 `;
+
+const defaultMarkdownCss = withTypography(baseMarkdownCss, defaultTypography);
 
 const styleElements = [
   { key: "app", label: "Background", fallback: "bg-slate-950 text-slate-100" },
@@ -129,238 +141,6 @@ function isFolderNotePath(path: string | null) {
   return parts.length > 1 && parts[parts.length - 1] === `${parts[parts.length - 2]}.md`;
 }
 
-type LiveEditorProps = {
-  value: string;
-  onChange: (value: string) => void;
-  className: string;
-  disabled: boolean;
-  dropCap?: boolean;
-  elementNames?: string[];
-  onOpenElement?: (name: string) => void;
-  onHoverElement?: (name: string | null, rect?: DOMRect) => void;
-  focusDim?: boolean;
-};
-
-// One editing surface: the active line is raw markdown, every other line is rendered.
-function LiveEditor({ value, onChange, className, disabled, dropCap = true, elementNames = [], onOpenElement, onHoverElement, focusDim = false }: LiveEditorProps) {
-  const lines = useMemo(() => value.split("\n"), [value]);
-  const [active, setActive] = useState(0);
-  const pending = useRef<{ line: number; pos: number } | null>(null);
-  const inputRef = useRef<HTMLTextAreaElement | null>(null);
-  const current = Math.min(active, lines.length - 1);
-  const [caret, setCaret] = useState(0);
-  const [sel, setSel] = useState(0);
-
-  // Typing [[ offers matching elements to link to.
-  const linkMatch = !disabled && lines[current] !== undefined ? /\[\[([^\]\n]*)$/.exec(lines[current].slice(0, caret)) : null;
-  const suggestions = linkMatch ? elementNames.filter((name) => name.toLowerCase().includes(linkMatch[1].toLowerCase())).slice(0, 6) : [];
-
-  function applySuggestion(name: string) {
-    if (!linkMatch) return;
-    const line = lines[current];
-    const before = line.slice(0, linkMatch.index);
-    const after = line.slice(caret);
-    const next = [...lines];
-    next[current] = `${before}[[${name}]]${after.startsWith("]]") ? after.slice(2) : after}`;
-    update(next);
-    const pos = before.length + name.length + 4;
-    setCaret(pos);
-    setSel(0);
-    focusLine(current, pos);
-  }
-
-  const rendered = useMemo(() => {
-    let inFence = false;
-    // A page starts at the top of the file and after each horizontal rule.
-    let pageStart = dropCap;
-    return lines.map((line) => {
-      if (line.trim().startsWith("```")) {
-        inFence = !inFence;
-        return { kind: "fence" as const, html: "" };
-      }
-      if (inFence) return { kind: "code" as const, html: "" };
-      if (!line.trim()) return { kind: "blank" as const, html: "" };
-
-      if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) {
-        pageStart = dropCap;
-        return { kind: "md" as const, html: marked.parse(line, { gfm: true }) as string };
-      }
-
-      let source = line;
-      if (pageStart && !/^\s*(#|>|[-*+]\s|\d+[.)]\s|<|\||!\[)/.test(line)) {
-        source = line.replace(/^(\s*["“'‘]?)(\p{L})/u, '$1<span class="DropCap">$2</span>');
-        pageStart = false;
-      } else if (!/^\s*#/.test(line)) {
-        pageStart = false;
-      }
-      const known = new Set(elementNames.map((name) => name.toLowerCase()));
-      const escape = (text: string) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-      source = source.replace(/\[\[([^\]\n]+)\]\]/g, (_match, name: string) => {
-        const trimmed = name.trim();
-        return `<a class="element-link${known.has(trimmed.toLowerCase()) ? "" : " missing"}" data-element="${escape(trimmed)}">${escape(trimmed)}</a>`;
-      });
-      return { kind: "md" as const, html: marked.parse(source, { gfm: true }) as string };
-    });
-  }, [lines, dropCap, elementNames]);
-
-  function update(next: string[]) {
-    onChange(next.join("\n"));
-  }
-
-  function focusLine(line: number, pos: number) {
-    pending.current = { line, pos };
-    setActive(line);
-  }
-
-  useLayoutEffect(() => {
-    const el = inputRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${el.scrollHeight}px`;
-    if (pending.current && pending.current.line === current) {
-      el.focus();
-      el.setSelectionRange(pending.current.pos, pending.current.pos);
-      pending.current = null;
-    }
-  });
-
-  function onKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
-    const el = event.currentTarget;
-    const pos = el.selectionStart;
-    const end = el.selectionEnd;
-
-    if (suggestions.length > 0) {
-      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-        event.preventDefault();
-        setSel((prev) => (prev + (event.key === "ArrowDown" ? 1 : suggestions.length - 1)) % suggestions.length);
-        return;
-      }
-      if (event.key === "Enter" || event.key === "Tab") {
-        event.preventDefault();
-        applySuggestion(suggestions[Math.min(sel, suggestions.length - 1)]);
-        return;
-      }
-    }
-
-    if (event.key === "Enter") {
-      event.preventDefault();
-      const next = [...lines];
-      next.splice(current, 1, lines[current].slice(0, pos), lines[current].slice(end));
-      update(next);
-      focusLine(current + 1, 0);
-    } else if (event.key === "Backspace" && pos === 0 && end === 0 && current > 0) {
-      event.preventDefault();
-      const next = [...lines];
-      const joinAt = lines[current - 1].length;
-      next.splice(current - 1, 2, lines[current - 1] + lines[current]);
-      update(next);
-      focusLine(current - 1, joinAt);
-    } else if (event.key === "ArrowUp" && current > 0 && !event.shiftKey) {
-      event.preventDefault();
-      focusLine(current - 1, Math.min(pos, lines[current - 1].length));
-    } else if (event.key === "ArrowDown" && current < lines.length - 1 && !event.shiftKey) {
-      event.preventDefault();
-      focusLine(current + 1, Math.min(pos, lines[current + 1].length));
-    } else if (event.key === "ArrowLeft" && pos === 0 && end === 0 && current > 0) {
-      event.preventDefault();
-      focusLine(current - 1, lines[current - 1].length);
-    } else if (event.key === "ArrowRight" && pos === lines[current].length && current < lines.length - 1) {
-      event.preventDefault();
-      focusLine(current + 1, 0);
-    }
-  }
-
-  if (disabled) {
-    return <div className={`flex-1 overflow-auto ${className}`} style={{ color: "var(--muted)" }}>Choose a workspace and open or create a file to start writing.</div>;
-  }
-
-  return (
-    <div className={`flex-1 overflow-auto ${className}`}>
-      <style>{`.markdown-body.live-line > :first-child{margin-top:0}.markdown-body.live-line > :last-child{margin-bottom:0}.element-link{color:#38bdf8;border-bottom:1px dotted #38bdf8;cursor:pointer}.element-link.missing{color:#f87171;border-bottom-color:#f87171}.focus-lines > *{transition:opacity 1.2s ease}.focus-lines.focus-dim > *:not(.active-line){opacity:0.06}`}</style>
-      <div
-        className={`markdown-body focus-lines${focusDim ? " focus-dim" : ""}`}
-        onMouseOver={(event) => {
-          const link = (event.target as HTMLElement).closest?.("[data-element]");
-          if (link) onHoverElement?.(link.getAttribute("data-element"), link.getBoundingClientRect());
-        }}
-        onMouseOut={(event) => {
-          if ((event.target as HTMLElement).closest?.("[data-element]")) onHoverElement?.(null);
-        }}
-      >
-        {lines.map((line, index) => {
-          if (index === current) {
-            return (
-              <div key={index} className="active-line" style={{ position: "relative" }}>
-              <textarea
-                ref={inputRef}
-                rows={1}
-                value={line}
-                spellCheck
-                onChange={(event) => {
-                  const next = [...lines];
-                  next[index] = event.target.value.replace(/\n/g, " ");
-                  update(next);
-                  setCaret(event.target.selectionStart ?? 0);
-                  setSel(0);
-                }}
-                onSelect={(event) => setCaret((event.target as HTMLTextAreaElement).selectionStart ?? 0)}
-                onKeyDown={onKeyDown}
-                style={{
-                  display: "block",
-                  width: "100%",
-                  resize: "none",
-                  overflow: "hidden",
-                  border: "none",
-                  outline: "none",
-                  background: "transparent",
-                  color: "inherit",
-                  padding: 0,
-                  font: "inherit",
-                  fontFamily: '"JetBrains Mono", monospace',
-                  fontSize: 14,
-                  lineHeight: 1.75,
-                }}
-              />
-              {suggestions.length > 0 && (
-                <div className="rounded-lg border border-slate-700 bg-slate-900 text-slate-100 py-1 shadow-lg" style={{ position: "absolute", left: 0, top: "100%", zIndex: 20, minWidth: 200 }}>
-                  {suggestions.map((name, i) => (
-                    <div key={name} className="px-3 py-1 cursor-pointer" style={{ background: i === Math.min(sel, suggestions.length - 1) ? "rgba(245,158,11,0.25)" : undefined }} onMouseDown={(event) => { event.preventDefault(); applySuggestion(name); }}>
-                      {name}
-                    </div>
-                  ))}
-                </div>
-              )}
-              </div>
-            );
-          }
-
-          const item = rendered[index];
-          const common = {
-            key: index,
-            onMouseDown: (event: React.MouseEvent) => {
-              event.preventDefault();
-              const link = (event.target as HTMLElement).closest?.("[data-element]");
-              if (link && onOpenElement) {
-                onOpenElement(link.getAttribute("data-element") ?? "");
-                return;
-              }
-              focusLine(index, line.length);
-            },
-          };
-          if (item.kind === "blank") return <div {...common} style={{ minHeight: "1.75em" }} />;
-          if (item.kind === "md") return <div {...common} className="markdown-body live-line" dangerouslySetInnerHTML={{ __html: item.html }} />;
-          return (
-            <div {...common} style={{ fontFamily: '"JetBrains Mono", monospace', fontSize: 14, whiteSpace: "pre-wrap", background: "rgba(15, 23, 42, 0.8)", padding: "0 0.75rem", minHeight: "1.75em" }}>
-              {line}
-            </div>
-          );
-        })}
-        <div style={{ minHeight: 160 }} onMouseDown={(event) => { event.preventDefault(); focusLine(lines.length - 1, lines[lines.length - 1].length); }} />
-      </div>
-    </div>
-  );
-}
-
 function App() {
   const [workspace, setWorkspace] = useState<string | null>(null);
   const [tree, setTree] = useState<TreeNode[]>([]);
@@ -375,28 +155,46 @@ function App() {
   const [openStyle, setOpenStyle] = useState<string | null>(null);
   const [novel, setNovel] = useState<NovelEntry | null>(null);
   const [novelSettingsOpen, setNovelSettingsOpen] = useState(false);
-  const [tab, setTab] = useState<"manuscript" | "planning" | "elements" | "research">("manuscript");
+  const [tab, setTab] = useState<Tab>("manuscript");
   const [elements, setElements] = useState<ElementItem[]>([]);
   const [selectedElementId, setSelectedElementId] = useState<string | null>(null);
   const [hoverElement, setHoverElement] = useState<{ name: string; x: number; y: number } | null>(null);
 
+  const [prefs, setPrefs] = usePrefs();
+  const confirmDelete = prefs.confirmDelete;
+  const editorRef = useRef<EditorHandle | null>(null);
+  const [vimMode, setVimMode] = useState<VimMode | null>(null);
+  const [dialog, setDialog] = useState<null | "shortcuts" | "about" | "welcome" | "markdown" | "goals" | "export" | "email" | "import" | "format">(null);
+  const [find, setFind] = useState<null | "find" | "replace">(null);
+  const [fullscreen, setFullscreen] = useState(false);
+  const [alwaysOnTop, setAlwaysOnTop] = useState(false);
+
   // Focus mode: the interface and every line but the current one fade away; moving the mouse brings them back until it rests for 3 seconds.
+  // It stays on while you visit other tabs and applies again when you return to the manuscript.
   const [focusMode, setFocusMode] = useState(false);
   const [awake, setAwake] = useState(true);
   const wakeTimer = useRef<number | undefined>(undefined);
   const lastMouse = useRef({ x: 0, y: 0 });
 
-  function toggleFocus(event: React.MouseEvent) {
+  function toggleFocus() {
     window.clearTimeout(wakeTimer.current);
     if (focusMode) {
       setFocusMode(false);
       setAwake(true);
       return;
     }
-    lastMouse.current = { x: event.clientX, y: event.clientY };
     setAwake(false);
     setFocusMode(true);
   }
+
+  useEffect(() => {
+    if (focusMode) return;
+    const track = (event: MouseEvent) => {
+      lastMouse.current = { x: event.clientX, y: event.clientY };
+    };
+    window.addEventListener("mousemove", track);
+    return () => window.removeEventListener("mousemove", track);
+  }, [focusMode]);
 
   useEffect(() => {
     if (!focusMode) return;
@@ -424,24 +222,18 @@ function App() {
   }, [focusMode]);
 
   useEffect(() => {
-    if (focusMode && (!novel || tab !== "manuscript")) {
+    if (focusMode && !novel) {
       setFocusMode(false);
       setAwake(true);
     }
-  }, [focusMode, novel, tab]);
+  }, [focusMode, novel]);
 
-  const dim = focusMode && !awake;
+  const dim = focusMode && !awake && !!novel && tab === "manuscript";
   const fade: React.CSSProperties = { opacity: dim ? 0 : 1, pointerEvents: dim ? "none" : undefined, transition: "opacity 1.2s ease" };
   const elementNames = useMemo(() => elements.map((element) => element.name), [elements]);
   const [treeMenu, setTreeMenu] = useState<{ x: number; y: number; node: TreeNode; siblings: TreeNode[] } | null>(null);
   const dragPath = useRef<string | null>(null);
   const savedRef = useRef<{ path: string; content: string } | null>(null);
-  const [confirmDelete, setConfirmDelete] = useState(() => localStorage.getItem("ghoaxtwriter.confirmDelete") !== "false");
-
-  useEffect(() => {
-    localStorage.setItem("ghoaxtwriter.confirmDelete", String(confirmDelete));
-  }, [confirmDelete]);
-
   useEffect(() => {
     const close = () => setTreeMenu(null);
     window.addEventListener("click", close);
@@ -458,7 +250,7 @@ function App() {
     setSelectedFile(null);
     setFileContent("");
     setSelectedFolder(target.path);
-    setTab("manuscript");
+    setTab(prefs.defaultTab);
     setHoverElement(null);
     setElements([]);
     void loadElements(apiFetch, target.path).then(setElements).catch(() => undefined);
@@ -511,7 +303,7 @@ function App() {
 
   function applySettings(settings: WorkspaceState["settings"]) {
     setAppCss(settings.appCss || defaultAppCss);
-    setMarkdownCss(settings.markdownCss || defaultMarkdownCss);
+    setMarkdownCss(ensureTypography(settings.markdownCss || defaultMarkdownCss));
     setTw(parseTailwind(settings.tailwindClasses));
   }
 
@@ -595,9 +387,9 @@ function App() {
     if (!selectedFile || !workspace) return;
     const timeout = window.setTimeout(() => {
       void saveFile();
-    }, 350);
+    }, prefs.autosaveMs);
     return () => window.clearTimeout(timeout);
-  }, [fileContent, selectedFile, workspace]);
+  }, [fileContent, selectedFile, workspace, prefs.autosaveMs]);
 
   async function persistStyles(next: { appCss: string; markdownCss: string; tw: TailwindMap }) {
     if (!workspace) return;
@@ -791,6 +583,9 @@ function App() {
           >
             {node.type === "dir" ? "📁" : "📄"} {node.name}
           </button>
+          {prefs.showTreeWords && (
+            <span style={{ fontSize: 11, color: "var(--muted)", whiteSpace: "nowrap" }}>{formatWords(wordsOf(node), node.type === "dir" && novel ? goals.chapters?.[getRelativePath(novel.path, node.path)] : undefined, prefs.wordFormat)}</span>
+          )}
           <button type="button" title="Delete" className="px-2 opacity-60" onClick={() => void deleteNode(node)}>
             ✕
           </button>
@@ -800,6 +595,360 @@ function App() {
     });
   }
 
+  // ---- Undo history for the open scene ----
+  const undoStack = useRef<string[]>([]);
+  const redoStack = useRef<string[]>([]);
+  const lastEdit = useRef(0);
+
+  useEffect(() => {
+    undoStack.current = [];
+    redoStack.current = [];
+    lastEdit.current = 0;
+  }, [selectedFile]);
+
+  function editContent(next: string) {
+    const now = Date.now();
+    if (now - lastEdit.current > 700 || undoStack.current.length === 0) {
+      undoStack.current.push(fileContent);
+      if (undoStack.current.length > 200) undoStack.current.shift();
+    }
+    lastEdit.current = now;
+    redoStack.current = [];
+    setFileContent(next);
+  }
+
+  function undo() {
+    const previous = undoStack.current.pop();
+    if (previous === undefined) return;
+    redoStack.current.push(fileContent);
+    lastEdit.current = 0;
+    setFileContent(previous);
+  }
+
+  function redo() {
+    const next = redoStack.current.pop();
+    if (next === undefined) return;
+    undoStack.current.push(fileContent);
+    lastEdit.current = 0;
+    setFileContent(next);
+  }
+
+  const sceneWords = useMemo(() => (fileContent.match(/\S+/g) ?? []).length, [fileContent]);
+
+  function windowAction(action: string, value?: boolean) {
+    void post(apiFetch, "/api/window", { action, value }).catch(() => undefined);
+  }
+
+  async function searchManuscript(query: string, caseSensitive: boolean): Promise<SearchHit[]> {
+    if (!novel) return [];
+    const result = await apiFetch<{ hits: SearchHit[] }>(`/api/search?novel=${encodeURIComponent(novel.path)}&q=${encodeURIComponent(query)}&case=${caseSensitive ? 1 : 0}`);
+    return result.hits;
+  }
+
+  async function openHit(hit: SearchHit) {
+    await loadFile(hit.path);
+    setSelectedFolder(hit.path.slice(0, hit.path.lastIndexOf("/")));
+    setTab("manuscript");
+    window.setTimeout(() => editorRef.current?.goTo(hit.line, 0), 150);
+  }
+
+  // ---- Word counts beside files and folders ----
+  const [wordMap, setWordMap] = useState<Record<string, number>>({});
+  const [wordsLoaded, setWordsLoaded] = useState(false);
+
+  async function loadWordCounts() {
+    if (!novel) return;
+    try {
+      const result = await apiFetch<{ words: Record<string, number> }>(`/api/stats?novel=${encodeURIComponent(novel.path)}`);
+      setWordMap(result.words);
+      setWordsLoaded(true);
+    } catch {
+      // Counts are a convenience; ignore failures.
+    }
+  }
+
+  useEffect(() => {
+    if (!novel) {
+      setWordMap({});
+      return;
+    }
+    const timer = window.setTimeout(() => void loadWordCounts(), 1500);
+    return () => window.clearTimeout(timer);
+  }, [novel?.path, tree, fileContent]);
+
+  useEffect(() => {
+    setWordMap({});
+    setWordsLoaded(false);
+  }, [novel?.path]);
+
+  async function saveMeta(change: Record<string, unknown>) {
+    if (!novel) return;
+    try {
+      const result = await post<{ meta: NovelEntry["meta"]; path: string }>(apiFetch, "/api/novel/meta", { path: novel.path, meta: change });
+      setNovel((prev) => (prev && prev.path === novel.path ? { ...prev, meta: result.meta } : prev));
+    } catch (error) {
+      setStatus(errorText(error));
+    }
+  }
+
+  const mapWords = (node: TreeNode): number => (node.type === "file" ? wordMap[node.path] ?? 0 : (node.children ?? []).reduce((sum, child) => sum + mapWords(child), 0));
+  const today = todayKey();
+  const goals: Goals = novel?.meta.goals ?? {};
+  const baseline = novel?.meta.progress?.[today];
+
+  // The first count of each day becomes that day's starting point.
+  useEffect(() => {
+    if (!novel || !wordsLoaded || baseline !== undefined) return;
+    const progress = { ...(novel.meta.progress ?? {}), [today]: tree.reduce((sum, node) => sum + mapWords(node), 0) };
+    const recent = Object.fromEntries(Object.entries(progress).sort(([a], [b]) => a.localeCompare(b)).slice(-120));
+    void saveMeta({ progress: recent });
+  }, [novel?.path, wordsLoaded, baseline, today]);
+
+  function wordsOf(node: TreeNode): number {
+    if (node.type === "file") return node.path === selectedFile ? sceneWords : wordMap[node.path] ?? 0;
+    return (node.children ?? []).reduce((sum, child) => sum + wordsOf(child), 0);
+  }
+
+  const totalWords = tree.reduce((sum, node) => sum + wordsOf(node), 0);
+  const wordsAtStartOfToday = baseline ?? totalWords;
+  const todayWords = Math.max(0, totalWords - wordsAtStartOfToday);
+  const dailyPlan = dailyTarget(goals, wordsAtStartOfToday, today);
+
+  function folderList(nodes: TreeNode[], depth = 0): Array<{ path: string; name: string; words: number; depth: number }> {
+    return nodes.flatMap((node) => (node.type === "dir" ? [{ path: novel ? getRelativePath(novel.path, node.path) : node.path, name: node.name, words: wordsOf(node), depth }, ...folderList(node.children ?? [], depth + 1)] : []));
+  }
+
+  async function runExport(options: ExportOptions, mode: "save" | "email"): Promise<string> {
+    if (!novel) throw new Error("Open a novel first.");
+    const result = await post<{ path: string; name: string; pages: number; words: number }>(apiFetch, "/api/export/pdf", {
+      novel: novel.path,
+      spacing: options.spacing,
+      fontSize: options.fontSize,
+      newPageChapters: options.newPage,
+    });
+    setPrefs({ pdfSpacing: options.spacing, pdfFontSize: options.fontSize, pdfNewPage: options.newPage, ...(mode === "email" ? { email: options.email } : {}) });
+    void post(apiFetch, "/api/reveal", { path: result.path }).catch(() => undefined);
+    if (mode === "email") {
+      const subject = `${novel.meta.title} - draft ${today}`;
+      const body = `Draft of "${novel.meta.title}" (${result.pages} pages, ${result.words.toLocaleString()} words).\n\nThe PDF is saved at:\n${result.path}\n\nAttach it to this message before sending.`;
+      await post(apiFetch, "/api/open", { novel: novel.path, url: `mailto:${options.email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}` });
+    }
+    setStatus(`PDF draft saved: ${result.path}`);
+    return mode === "email"
+      ? `Saved ${result.name} (${result.pages} pages). Your mail app has opened a message to ${options.email}; drag the PDF from the folder that just opened into it.`
+      : `Saved ${result.name} (${result.pages} pages) in the novel's Drafts folder.`;
+  }
+
+  // Shift+H/L change tabs; Shift+J/K step through chapters, acts and scenes in order.
+  function vimNavigate(action: "tabPrev" | "tabNext" | "nodePrev" | "nodeNext") {
+    if (!novel) return;
+    if (action === "tabPrev" || action === "tabNext") {
+      const order: Tab[] = ["manuscript", "planning", "elements", "research"];
+      setTab(order[(order.indexOf(tab) + (action === "tabNext" ? 1 : order.length - 1)) % order.length]);
+      return;
+    }
+    const flat: TreeNode[] = [];
+    const walk = (nodes: TreeNode[]) => nodes.forEach((node) => { flat.push(node); if (node.children) walk(node.children); });
+    walk(tree);
+    if (!flat.length) return;
+    const index = flat.findIndex((node) => (node.type === "dir" ? folderNotePath(node.path) === selectedFile : node.path === selectedFile));
+    const next = flat[Math.max(0, Math.min(flat.length - 1, index === -1 ? 0 : index + (action === "nodeNext" ? 1 : -1)))];
+    setTab("manuscript");
+    if (next.type === "dir") {
+      void openFolderNote(next.path);
+    } else {
+      setSelectedFolder(next.path.slice(0, next.path.lastIndexOf("/")));
+      void loadFile(next.path);
+    }
+  }
+
+  const shortcutsRef = useRef(prefs.shortcuts);
+  shortcutsRef.current = prefs.shortcuts;
+
+  function setShortcut(id: string, shortcut: string | null) {
+    const next = { ...shortcutsRef.current };
+    if (shortcut === null) delete next[id];
+    else next[id] = shortcut;
+    shortcutsRef.current = next;
+    setPrefs({ shortcuts: next });
+  }
+
+  type Command = { id: string; defaultShortcut?: string; label: string; group: string; shortcut?: string; alias?: string[]; native?: boolean; enabled?: boolean; checked?: boolean; run: () => void };
+  const inNovel = !!novel;
+  const inEditor = inNovel && tab === "manuscript" && !!selectedFile;
+  const ed = () => editorRef.current;
+  const zoomBy = (delta: number) => setPrefs({ zoom: Math.max(60, Math.min(220, prefs.zoom + delta)) });
+
+  const baseCommands: Command[] = [
+    { id: "newScene", label: "New scene", group: "File", shortcut: "Ctrl+Shift+N", enabled: inNovel, run: () => void createFile() },
+    { id: "newChapter", label: "New chapter", group: "File", shortcut: "Ctrl+Alt+N", enabled: inNovel, run: () => void createFolder("Chapter") },
+    { id: "newAct", label: "New act", group: "File", shortcut: "Ctrl+Alt+Shift+N", enabled: inNovel, run: () => void createFolder("Act") },
+    { id: "library", label: "Open library", group: "File", enabled: inNovel, run: closeNovel },
+    { id: "novelSettings", label: "Novel settings…", group: "File", enabled: inNovel, run: () => setNovelSettingsOpen(true) },
+    { id: "save", label: "Save", group: "File", shortcut: "Ctrl+S", enabled: inEditor, run: () => void saveFile().then(() => setStatus("Saved.")) },
+    { id: "goals", label: "Word goals…", group: "File", shortcut: "Ctrl+Alt+G", enabled: inNovel, run: () => setDialog("goals") },
+    { id: "exportPdf", label: "Export PDF draft…", group: "File", enabled: inNovel, run: () => setDialog("export") },
+    { id: "emailDraft", label: "Email PDF draft to myself…", group: "File", enabled: inNovel, run: () => setDialog("email") },
+    { id: "importManuscript", label: "Import manuscript…", group: "File", enabled: inNovel, run: () => setDialog("import") },
+    { id: "settings", label: "Settings…", group: "File", shortcut: "Ctrl+,", run: () => setStyleEditorOpen((prev) => !prev) },
+    { id: "changeWorkspace", label: "Change workspace location…", group: "File", run: () => void chooseWorkspace() },
+    { id: "revealWorkspace", label: "Show workspace in file manager", group: "File", enabled: !!workspace, run: () => void post(apiFetch, "/api/reveal", { path: workspace }) },
+    { id: "quit", label: "Quit", group: "File", shortcut: "Ctrl+Q", run: () => windowAction("quit") },
+
+    { id: "undo", label: "Undo", group: "Edit", shortcut: "Ctrl+Z", enabled: inEditor, run: undo },
+    { id: "redo", label: "Redo", group: "Edit", shortcut: "Ctrl+Shift+Z", alias: ["Ctrl+Y"], enabled: inEditor, run: redo },
+    { id: "cut", label: "Cut", group: "Edit", shortcut: "Ctrl+X", native: true, enabled: inEditor, run: () => ed()?.cut() },
+    { id: "copy", label: "Copy", group: "Edit", shortcut: "Ctrl+C", native: true, enabled: inEditor, run: () => ed()?.copy() },
+    { id: "paste", label: "Paste", group: "Edit", shortcut: "Ctrl+V", native: true, enabled: inEditor, run: () => ed()?.paste() },
+    { id: "selectLine", label: "Select line", group: "Edit", shortcut: "Ctrl+L", enabled: inEditor, run: () => ed()?.selectLine() },
+    { id: "find", label: "Find…", group: "Edit", shortcut: "Ctrl+F", enabled: inEditor, run: () => setFind("find") },
+    { id: "replace", label: "Find and replace…", group: "Edit", shortcut: "Ctrl+H", enabled: inEditor, run: () => setFind("replace") },
+    { id: "deleteLine", label: "Delete line", group: "Edit", shortcut: "Ctrl+Shift+K", enabled: inEditor, run: () => ed()?.deleteLine() },
+    { id: "duplicateLine", label: "Duplicate line", group: "Edit", shortcut: "Ctrl+Shift+D", enabled: inEditor, run: () => ed()?.duplicateLine() },
+    { id: "lineUp", label: "Move line up", group: "Edit", shortcut: "Alt+ArrowUp", enabled: inEditor, run: () => ed()?.moveLine(-1) },
+    { id: "lineDown", label: "Move line down", group: "Edit", shortcut: "Alt+ArrowDown", enabled: inEditor, run: () => ed()?.moveLine(1) },
+    { id: "sceneBreak", label: "Insert scene break", group: "Edit", shortcut: "Ctrl+Alt+B", enabled: inEditor, run: () => ed()?.insertLineAfter("***") },
+    { id: "elementLink", label: "Insert element link", group: "Edit", shortcut: "Ctrl+K", enabled: inEditor, run: () => ed()?.insertText("[[]]", 2) },
+
+    { id: "bold", label: "Bold", group: "Format", shortcut: "Ctrl+B", enabled: inEditor, run: () => ed()?.wrapSelection("**") },
+    { id: "italic", label: "Italic", group: "Format", shortcut: "Ctrl+I", enabled: inEditor, run: () => ed()?.wrapSelection("*") },
+    { id: "strike", label: "Strikethrough", group: "Format", shortcut: "Ctrl+Shift+X", enabled: inEditor, run: () => ed()?.wrapSelection("~~") },
+    { id: "h1", label: "Heading 1", group: "Format", shortcut: "Ctrl+1", enabled: inEditor, run: () => ed()?.setHeading(1) },
+    { id: "h2", label: "Heading 2", group: "Format", shortcut: "Ctrl+2", enabled: inEditor, run: () => ed()?.setHeading(2) },
+    { id: "h3", label: "Heading 3", group: "Format", shortcut: "Ctrl+3", enabled: inEditor, run: () => ed()?.setHeading(3) },
+    { id: "quote", label: "Block quote", group: "Format", shortcut: "Ctrl+Shift+Q", enabled: inEditor, run: () => ed()?.prefixLine("> ") },
+    { id: "list", label: "Bulleted list", group: "Format", shortcut: "Ctrl+Shift+L", enabled: inEditor, run: () => ed()?.prefixLine("- ") },
+    { id: "poetry", label: "Poetry style (paragraph)", group: "Format", shortcut: "Ctrl+Alt+P", enabled: inEditor, run: () => ed()?.togglePoetry() },
+    { id: "clearFormat", label: "Clear formatting", group: "Format", enabled: inEditor, run: () => ed()?.clearFormatting() },
+    { id: "autoIndent", label: "Auto-indent and smart quotes", group: "Format", shortcut: "Ctrl+Alt+I", checked: prefs.autoIndent, run: () => setPrefs({ autoIndent: !prefs.autoIndent }) },
+    { id: "typography", label: "Fonts and drop caps…", group: "Format", run: () => setDialog("format") },
+    { id: "dropCap", label: "Drop caps", group: "Format", checked: prefs.dropCap, run: () => setPrefs({ dropCap: !prefs.dropCap }) },
+
+    { id: "zoomIn", label: "Zoom in", group: "View", shortcut: "Ctrl+=", alias: ["Ctrl++"], run: () => zoomBy(10) },
+    { id: "zoomOut", label: "Zoom out", group: "View", shortcut: "Ctrl+-", run: () => zoomBy(-10) },
+    { id: "zoomReset", label: "Reset zoom", group: "View", shortcut: "Ctrl+0", run: () => setPrefs({ zoom: 100 }) },
+    { id: "sidebar", label: "Show sidebar", group: "View", shortcut: "Ctrl+\\", checked: prefs.showSidebar, run: () => setPrefs({ showSidebar: !prefs.showSidebar }) },
+    { id: "statusBar", label: "Show status bar", group: "View", checked: prefs.showStatus, run: () => setPrefs({ showStatus: !prefs.showStatus }) },
+    { id: "wordCount", label: "Show word count", group: "View", checked: prefs.showWordCount, run: () => setPrefs({ showWordCount: !prefs.showWordCount }) },
+    { id: "focus", label: "Focus mode", group: "View", shortcut: "F9", enabled: inNovel, checked: focusMode, run: toggleFocus },
+    { id: "typewriter", label: "Typewriter scrolling", group: "View", checked: prefs.typewriter, run: () => setPrefs({ typewriter: !prefs.typewriter }) },
+    { id: "vim", label: "Vim keys", group: "View", shortcut: "Ctrl+Alt+V", checked: prefs.vim, run: () => setPrefs({ vim: !prefs.vim }) },
+    { id: "spellcheck", label: "Check spelling", group: "View", checked: prefs.spellcheck, run: () => setPrefs({ spellcheck: !prefs.spellcheck }) },
+    { id: "tabManuscript", label: "Manuscript", group: "View", shortcut: "Alt+1", enabled: inNovel, run: () => setTab("manuscript") },
+    { id: "tabPlanning", label: "Planning", group: "View", shortcut: "Alt+2", enabled: inNovel, run: () => setTab("planning") },
+    { id: "tabElements", label: "Elements", group: "View", shortcut: "Alt+3", enabled: inNovel, run: () => setTab("elements") },
+    { id: "tabResearch", label: "Research", group: "View", shortcut: "Alt+4", enabled: inNovel, run: () => setTab("research") },
+    { id: "fullscreen", label: "Full screen", group: "View", shortcut: "F11", checked: fullscreen, run: () => { windowAction("fullscreen", !fullscreen); setFullscreen(!fullscreen); } },
+    { id: "shortcuts", label: "Keyboard shortcuts", group: "View", shortcut: "Ctrl+/", run: () => setDialog("shortcuts") },
+
+    { id: "minimize", label: "Minimize", group: "Window", run: () => windowAction("minimize") },
+    { id: "maximize", label: "Maximize", group: "Window", run: () => windowAction("maximize") },
+    { id: "restore", label: "Restore", group: "Window", run: () => windowAction("unmaximize") },
+    { id: "onTop", label: "Always on top", group: "Window", checked: alwaysOnTop, run: () => { windowAction("alwaysOnTop", !alwaysOnTop); setAlwaysOnTop(!alwaysOnTop); } },
+    { id: "reload", label: "Reload", group: "Window", shortcut: "F5", run: () => window.location.reload() },
+    { id: "devtools", label: "Developer tools", group: "Window", shortcut: "F12", run: () => windowAction("devtools") },
+    { id: "closeWindow", label: "Close window", group: "Window", run: () => windowAction("close") },
+
+    { id: "welcome", label: "Getting started", group: "Help", run: () => setDialog("welcome") },
+    { id: "markdownGuide", label: "Markdown and formatting guide", group: "Help", run: () => setDialog("markdown") },
+    { id: "about", label: "About GhoaxtWriter", group: "Help", run: () => setDialog("about") },
+  ];
+
+  const commands: Command[] = baseCommands.map((command) => {
+    const override = prefs.shortcuts[command.id];
+    if (override === undefined) return { ...command, defaultShortcut: command.shortcut };
+    return { ...command, defaultShortcut: command.shortcut, shortcut: override || undefined, alias: [], native: false };
+  });
+
+  const commandsRef = useRef(commands);
+  const vimNavRef = useRef(vimNavigate);
+  vimNavRef.current = vimNavigate;
+  const vimOnRef = useRef(prefs.vim);
+  vimOnRef.current = prefs.vim;
+  commandsRef.current = commands;
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
+      const pressed = keyCombo(event);
+      const editable = (event.target as HTMLElement | null)?.closest?.("input, textarea, select, [contenteditable=true]");
+      const vimKeys: Record<string, "tabPrev" | "tabNext" | "nodePrev" | "nodeNext"> = { "Shift+H": "tabPrev", "Shift+L": "tabNext", "Shift+J": "nodeNext", "Shift+K": "nodePrev" };
+      if (vimOnRef.current && !editable && vimKeys[pressed]) {
+        event.preventDefault();
+        vimNavRef.current(vimKeys[pressed]);
+        return;
+      }
+      const command = commandsRef.current.find((c) => !c.native && (c.shortcut === pressed || c.alias?.includes(pressed)));
+      if (!command || command.enabled === false) return;
+      event.preventDefault();
+      command.run();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  const mi = (id: string): MenuItem => {
+    const command = commands.find((c) => c.id === id)!;
+    return { label: command.label, shortcut: command.shortcut, run: command.run, disabled: command.enabled === false, checked: command.checked };
+  };
+  const sep: MenuItem = { separator: true };
+  const choice = (label: string, active: boolean, run: () => void): MenuItem => ({ label, checked: active, run });
+
+  const menus: MenuDef[] = [
+    {
+      label: "File",
+      items: [
+        mi("newScene"), mi("newChapter"), mi("newAct"), sep,
+        mi("library"), mi("novelSettings"), sep,
+        mi("save"), mi("goals"), sep,
+        mi("exportPdf"), mi("emailDraft"), mi("importManuscript"), sep,
+        {
+          label: "Open novels to",
+          submenu: (["manuscript", "planning", "elements", "research"] as const).map((key) => choice(key[0].toUpperCase() + key.slice(1), prefs.defaultTab === key, () => setPrefs({ defaultTab: key }))),
+        },
+        mi("settings"), sep,
+        mi("changeWorkspace"), mi("revealWorkspace"), sep,
+        mi("quit"),
+      ],
+    },
+    {
+      label: "Edit",
+      items: [
+        mi("undo"), mi("redo"), sep,
+        mi("cut"), mi("copy"), mi("paste"), mi("selectLine"), sep,
+        mi("find"), mi("replace"), sep,
+        mi("deleteLine"), mi("duplicateLine"), mi("lineUp"), mi("lineDown"), sep,
+        mi("sceneBreak"), mi("elementLink"),
+      ],
+    },
+    {
+      label: "Format",
+      items: [
+        mi("bold"), mi("italic"), mi("strike"), sep,
+        mi("h1"), mi("h2"), mi("h3"), mi("quote"), mi("list"), sep,
+        mi("poetry"), mi("clearFormat"), sep,
+        mi("autoIndent"), mi("dropCap"), mi("typography"),
+      ],
+    },
+    {
+      label: "View",
+      items: [
+        mi("zoomIn"), mi("zoomOut"), mi("zoomReset"), sep,
+        mi("sidebar"), mi("statusBar"), mi("wordCount"), sep,
+        mi("focus"), mi("typewriter"), mi("vim"), mi("spellcheck"),
+        {
+          label: "Column width",
+          submenu: (["narrow", "medium", "wide", "full"] as const).map((key) => choice(key[0].toUpperCase() + key.slice(1), prefs.columnWidth === key, () => setPrefs({ columnWidth: key }))),
+        },
+        sep,
+        mi("tabManuscript"), mi("tabPlanning"), mi("tabElements"), mi("tabResearch"), sep,
+        mi("fullscreen"), mi("shortcuts"),
+      ],
+    },
+    { label: "Window", items: [mi("minimize"), mi("maximize"), mi("restore"), mi("fullscreen"), mi("onTop"), sep, mi("library"), sep, mi("reload"), mi("devtools"), sep, mi("closeWindow")] },
+    { label: "Help", items: [mi("welcome"), mi("markdownGuide"), mi("shortcuts"), sep, mi("about")] },
+  ];
+
   const textareaStyle = { width: "100%", borderRadius: 10, border: "1px solid var(--border)", background: "rgba(0,0,0,0.25)", color: "inherit", padding: 12, fontFamily: '"JetBrains Mono", monospace', fontSize: 12, resize: "vertical" as const };
 
   return (
@@ -808,21 +957,21 @@ function App() {
       <style>{markdownCss}</style>
 
       <div className={`h-screen flex flex-col ${tw.app}`} style={{ cursor: dim ? "none" : undefined }}>
-        <div className={`flex justify-between items-center px-4 py-3 border-b ${tw.header}`} style={fade}>
-          <h1 style={{ margin: 0, fontSize: 22 }}>{novel ? novel.meta.title : "GhoaxtWriter"}</h1>
-          <div className="flex gap-2 flex-wrap">
-            {novel && <button type="button" onClick={closeNovel} className={ghostButton}>Library</button>}
-            <button type="button" onClick={chooseWorkspace} className={buttonBase}>
-              {workspace ? "Change workspace" : "Choose workspace"}
-            </button>
-            {novel && tab === "manuscript" && <button type="button" onClick={() => void createFolder("Act")} className={ghostButton}>New act</button>}
-            {novel && tab === "manuscript" && <button type="button" onClick={() => void createFolder("Chapter")} className={ghostButton}>New chapter</button>}
-            {novel && <button type="button" onClick={() => setNovelSettingsOpen(true)} className={ghostButton}>Novel settings</button>}
-            {novel && tab === "manuscript" && <button type="button" onClick={() => void createFile()} className={ghostButton}>New scene</button>}
-            {novel && tab === "manuscript" && selectedFile && <button type="button" onClick={toggleFocus} className={ghostButton}>Focus mode</button>}
-            <button type="button" onClick={() => setStyleEditorOpen((prev) => !prev)} className={ghostButton}>
-              Settings
-            </button>
+        <div className={`flex items-center gap-4 px-2 py-1 border-b ${tw.header}`} style={fade}>
+          <div style={{ flex: 1 }}>
+            <Menubar menus={menus} />
+          </div>
+          <div className="flex items-center gap-3 justify-center">
+            <strong style={{ fontSize: 16 }}>{novel ? novel.meta.title : "GhoaxtWriter"}</strong>
+            {novel && (
+              <button type="button" onClick={toggleFocus} className={`px-3 py-1 rounded-lg border ${focusMode ? "border-amber-500 font-bold" : "border-slate-700"}`}>
+                Focus mode{focusMode ? " · on" : ""}
+              </button>
+            )}
+          </div>
+          <div className="flex gap-2 justify-end" style={{ flex: 1 }}>
+            {!workspace && <button type="button" onClick={chooseWorkspace} className={`px-3 py-1 ${tw.button}`}>Choose workspace</button>}
+            {novel && <button type="button" onClick={closeNovel} className="px-3 py-1 rounded-lg border border-slate-700">Library</button>}
           </div>
         </div>
 
@@ -830,7 +979,10 @@ function App() {
           workspace ? (
             <Library key={workspace} apiFetch={apiFetch} onOpen={(entry) => void openNovel(entry)} onStatus={setStatus} buttonClass={tw.button} className={`p-6 ${tw.editor}`} />
           ) : (
-            <div className={`flex-1 p-6 ${tw.editor}`} style={{ color: "var(--muted)" }}>Choose a workspace folder to see your library.</div>
+            <div className={`flex-1 p-6 flex flex-col items-center justify-center gap-4 ${tw.editor}`}>
+              <div style={{ color: "var(--muted)" }}>Choose a folder to keep your library in. Everything is saved there as plain files.</div>
+              <button type="button" onClick={chooseWorkspace} className={`px-5 py-3 ${tw.button}`}>Choose workspace</button>
+            </div>
           )
         ) : (
         <>
@@ -874,9 +1026,11 @@ function App() {
 
         {tab === "manuscript" && (
         <div className="flex flex-1 min-h-0">
-          <aside className={`w-64 shrink-0 overflow-auto p-2 border-r ${tw.sidebar}`} style={fade}>
-            {workspace ? renderTree(tree) : <div style={{ color: "var(--muted)" }}>No workspace selected.</div>}
-          </aside>
+          {prefs.showSidebar && (
+            <aside className={`w-64 shrink-0 overflow-auto p-2 border-r ${tw.sidebar}`} style={fade}>
+              {workspace ? renderTree(tree) : <div style={{ color: "var(--muted)" }}>No workspace selected.</div>}
+            </aside>
+          )}
 
           <div className="flex-1 flex flex-col min-w-0">
             {isFolderNotePath(selectedFile) && (
@@ -884,7 +1038,30 @@ function App() {
                 Folder note: {selectedFile!.split("/").slice(-2, -1)[0]}
               </div>
             )}
-            <LiveEditor key={selectedFile ?? "none"} value={fileContent} onChange={setFileContent} className={tw.editor} disabled={!selectedFile} dropCap={!isFolderNotePath(selectedFile)} elementNames={elementNames} onOpenElement={openElement} onHoverElement={(name, rect) => setHoverElement(name && rect ? { name, x: rect.left, y: rect.bottom } : null)} focusDim={dim} />
+            <LiveEditor
+              ref={editorRef}
+              key={selectedFile ?? "none"}
+              value={fileContent}
+              onChange={editContent}
+              className={tw.editor}
+              disabled={!selectedFile}
+              dropCap={prefs.dropCap && !isFolderNotePath(selectedFile)}
+              elementNames={elementNames}
+              onOpenElement={openElement}
+              onHoverElement={(name, rect) => setHoverElement(name && rect ? { name, x: rect.left, y: rect.bottom } : null)}
+              focusDim={dim}
+              autoIndent={prefs.autoIndent}
+              vim={prefs.vim}
+              onVimMode={setVimMode}
+              onUndo={undo}
+              onRedo={redo}
+              onVimNav={vimNavigate}
+              onFind={() => setFind("find")}
+              typewriter={prefs.typewriter}
+              spellcheck={prefs.spellcheck}
+              columnWidth={prefs.columnWidth}
+              zoom={prefs.zoom}
+            />
           </div>
         </div>
         )}
@@ -892,70 +1069,103 @@ function App() {
         )}
 
         {styleEditorOpen && (
-          <aside className={`fixed top-0 right-0 bottom-0 w-96 overflow-auto p-4 border-l shadow-2xl ${tw.panel}`} style={{ zIndex: 40, ...fade }} onClick={(event) => event.stopPropagation()}>
-            <div className="flex justify-between items-center mb-4">
-              <strong style={{ fontSize: 18 }}>Settings</strong>
-              <button type="button" onClick={() => setStyleEditorOpen(false)} className={ghostButton}>Close</button>
-            </div>
-
-            <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 6 }}>General</div>
-            <label className="flex items-center gap-2 mb-6">
-              <input type="checkbox" checked={confirmDelete} onChange={(event) => setConfirmDelete(event.target.checked)} />
-              Ask for confirmation before deleting
-            </label>
-
-            <div className="flex justify-between items-center mb-3">
-              <strong>Appearance</strong>
-              <div className="flex gap-2">
-                <button type="button" onClick={() => void resetStyles()} className={ghostButton}>Reset</button>
-                <button type="button" onClick={() => void saveStyles()} className={buttonBase}>Save</button>
-              </div>
-            </div>
-
-            <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 6 }}>Tailwind classes per element</div>
-            {styleElements.map((element) => (
-              <div key={element.key} className="mb-2">
-                <button
-                  type="button"
-                  onClick={() => setOpenStyle(openStyle === element.key ? null : element.key)}
-                  className={`w-full text-left px-3 py-2 rounded-lg border ${openStyle === element.key ? "border-amber-500" : "border-slate-700"}`}
-                >
-                  {element.label}
-                </button>
-                {openStyle === element.key && (
-                  <input
-                    autoFocus
-                    value={tw[element.key]}
-                    onChange={(event) => setTw({ ...tw, [element.key]: event.target.value })}
-                    placeholder={element.fallback}
-                    style={{ ...textareaStyle, resize: "none", marginTop: 6 }}
-                  />
-                )}
-              </div>
-            ))}
-
-            <div style={{ fontSize: 11, color: "var(--muted)", margin: "14px 0 6px" }}>Custom CSS</div>
-            {([
-              ["markdown", "Markdown formatting", markdownCss, setMarkdownCss, 260],
-              ["appcss", "App CSS", appCss, setAppCss, 180],
-            ] as const).map(([key, label, value, setter, height]) => (
-              <div key={key} className="mb-2">
-                <button
-                  type="button"
-                  onClick={() => setOpenStyle(openStyle === key ? null : key)}
-                  className={`w-full text-left px-3 py-2 rounded-lg border ${openStyle === key ? "border-amber-500" : "border-slate-700"}`}
-                >
-                  {label}
-                </button>
-                {openStyle === key && (
-                  <textarea value={value} onChange={(event) => setter(event.target.value)} style={{ ...textareaStyle, minHeight: height, marginTop: 6 }} />
-                )}
-              </div>
-            ))}
-          </aside>
+          <SettingsPanel
+            prefs={prefs}
+            setPrefs={setPrefs}
+            tw={tw}
+            setTw={setTw}
+            styleElements={styleElements}
+            appCss={appCss}
+            setAppCss={setAppCss}
+            markdownCss={markdownCss}
+            setMarkdownCss={setMarkdownCss}
+            workspace={workspace}
+            onChangeWorkspace={() => void chooseWorkspace()}
+            onReveal={() => void post(apiFetch, "/api/reveal", { path: workspace })}
+            onOpenShortcuts={() => setDialog("shortcuts")}
+            onSave={() => void saveStyles()}
+            onReset={() => void resetStyles()}
+            onClose={() => setStyleEditorOpen(false)}
+            panelClass={tw.panel}
+            buttonClass={tw.button}
+            style={fade}
+          />
         )}
 
-        <div className={`px-4 py-2 text-xs border-t ${tw.status}`} style={fade}>{status}</div>
+        {prefs.showStatus && (
+          <div className={`px-4 py-2 text-xs border-t flex justify-between gap-4 ${tw.status}`} style={fade}>
+            <span>{status}</span>
+            <span className="flex gap-4">
+              {vimMode && <strong>-- {vimMode.toUpperCase()} --</strong>}
+              {novel && prefs.showWordCount && dailyPlan.words !== null && <span>Today {formatWords(todayWords, dailyPlan.words, prefs.wordFormat)}</span>}
+              {novel && prefs.showWordCount && goals.overall && <span>Total {formatWords(totalWords, goals.overall.target, prefs.wordFormat)}</span>}
+              {inEditor && prefs.showWordCount && <span>{sceneWords.toLocaleString()} words</span>}
+            </span>
+          </div>
+        )}
+
+        {find && inEditor && (
+          <FindPanel
+            key={find}
+            initialMode={find}
+            content={fileContent}
+            onGoto={(line, pos) => editorRef.current?.goTo(line, pos)}
+            onReplace={editContent}
+            onClose={() => setFind(null)}
+            searchNovel={searchManuscript}
+            onOpenHit={(hit) => void openHit(hit)}
+          />
+        )}
+        {dialog === "shortcuts" && <ShortcutsDialog commands={commands} onSet={setShortcut} onResetAll={() => { shortcutsRef.current = {}; setPrefs({ shortcuts: {} }); }} onClose={() => setDialog(null)} />}
+        {dialog === "markdown" && <InfoDialog title="Markdown and formatting guide" onClose={() => setDialog(null)}><MarkdownGuide /></InfoDialog>}
+        {dialog === "goals" && novel && (
+          <GoalsDialog
+            goals={goals}
+            totalWords={totalWords}
+            todayWords={todayWords}
+            wordsAtStartOfToday={wordsAtStartOfToday}
+            history={novel.meta.progress ?? {}}
+            chapters={folderList(tree)}
+            onSave={(next) => { void saveMeta({ goals: next }); setDialog(null); }}
+            onClose={() => setDialog(null)}
+          />
+        )}
+        {(dialog === "export" || dialog === "email") && novel && (
+          <ExportDialog
+            mode={dialog === "email" ? "email" : "save"}
+            defaults={{ spacing: prefs.pdfSpacing, fontSize: prefs.pdfFontSize, newPage: prefs.pdfNewPage, email: prefs.email }}
+            onRun={(options) => runExport(options, dialog === "email" ? "email" : "save")}
+            onClose={() => setDialog(null)}
+          />
+        )}
+        {dialog === "import" && novel && (
+          <ImportDialog
+            novelPath={novel.path}
+            apiFetch={apiFetch}
+            onImported={(result) => {
+              void fetchTree().then((next) => setTree(next.tree));
+              setStatus(`Imported ${result.chapters} chapters and ${result.scenes} scenes (${result.words.toLocaleString()} words).`);
+            }}
+            onClose={() => setDialog(null)}
+          />
+        )}
+        {dialog === "format" && (
+          <FormatDialog markdownCss={markdownCss} setMarkdownCss={setMarkdownCss} prefs={prefs} setPrefs={setPrefs} onSave={() => void saveStyles()} onClose={() => setDialog(null)} />
+        )}
+        {dialog === "about" && (
+          <InfoDialog title="About GhoaxtWriter" onClose={() => setDialog(null)}>
+            <p>A local, novel-first writing app. Everything you write is saved as ordinary files in your workspace folder, so other programs can read it too.</p>
+            <p style={{ color: "var(--muted)" }}>Version 0.0.1</p>
+          </InfoDialog>
+        )}
+        {dialog === "welcome" && (
+          <InfoDialog title="Getting started" onClose={() => setDialog(null)}>
+            <p><strong>Library:</strong> pick an author, then create shelves (series) and novels.</p>
+            <p><strong>Manuscript:</strong> acts and chapters are folders, scenes are files. The line you're on shows markdown; all other lines show formatted.</p>
+            <p><strong>Planning, Elements, Research:</strong> arrange scenes as cards, keep characters and places you can link with [[Name]], and collect research.</p>
+            <p><strong>Focus mode (F9):</strong> fades everything but the current line until you move the mouse.</p>
+          </InfoDialog>
+        )}
 
         {novel && hoverElement && (() => {
           const found = elements.find((element) => element.name.toLowerCase() === hoverElement.name.toLowerCase());

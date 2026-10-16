@@ -1,58 +1,41 @@
-# React + Tailwind + Vite Electrobun Template
+# GhoaxtWriter
 
-A fast Electrobun desktop app template with React, Tailwind CSS, and Vite for hot module replacement (HMR).
+A distraction-free, novel-first desktop writing app. Your work is stored as plain Markdown files in a local workspace folder, organised as shelves, novels, acts, chapters and scenes.
 
-## Getting Started
+## Features
+
+- Single-panel live Markdown editor with focus mode, typewriter scrolling, vim keys and customisable shortcuts
+- Library with shelves per author, novel metadata and generated covers (10 templates, 12 palettes, or import your own image)
+- Planning, Elements (`[[links]]`) and Research tabs
+- Word-count goals, per-chapter and per-scene word counts
+- Import manuscripts (docx, odt, html, epub, rtf, pdf, plain text)
+- Export drafts to PDF, or compose an email draft
+- Typography and manuscript formatting controls
+
+Generated covers are drawn entirely from code-made vector shapes; no third-party artwork is bundled.
+
+## Installation (Linux x64)
+
+1. Download `linux-x64-GhoaxtWriter-Setup.tar.gz` from the [latest release](https://github.com/VoidLance/GhoaxtWriter/releases).
+2. Extract and run the installer:
+
+   ```bash
+   tar xzf linux-x64-GhoaxtWriter-Setup.tar.gz
+   ./installer
+   ```
+
+3. The installer places the app in `~/.local/share/` and creates a desktop shortcut. Launch GhoaxtWriter from your application menu.
+
+## Building from source
+
+Requires Hutch (the Electrobun toolchain used by this project).
 
 ```bash
-# Install dependencies
-hutch run install
-
-# Development without HMR (uses bundled assets)
-hutch run dev
-
-# Development with HMR (recommended)
-hutch run dev:hmr
-
-# Build for production
-hutch run build:canary
+hutch run install        # install dependencies
+hutch run dev:hmr        # development with hot reload
+hutch run build          # production build, output in artifacts/
 ```
 
-## How HMR Works
+## License
 
-When you run `hutch run dev:hmr`:
-
-1. **Vite dev server** starts on `http://localhost:5173` with HMR enabled
-2. **Electrobun** starts and detects the running Vite server
-3. The app loads from the Vite dev server instead of bundled assets
-4. Changes to React components update instantly without full page reload
-
-When you run `hutch run dev` (without HMR):
-
-1. Electrobun starts and loads from `views://mainview/index.html`
-2. Vite rebuilds the bundled assets before Electrobun starts
-
-## Project Structure
-
-```
-├── src/
-│   ├── bun/
-│   │   └── index.ts        # Main process (Electrobun/Cottontail)
-│   └── mainview/
-│       ├── App.tsx         # React app component
-│       ├── main.tsx        # React entry point
-│       ├── index.html      # HTML template
-│       └── index.css       # Tailwind CSS
-├── electrobun.config.ts    # Electrobun configuration
-├── vite.config.ts          # Vite configuration
-├── tailwind.config.js      # Tailwind configuration
-└── package.json
-```
-
-## Customizing
-
-- **React components**: Edit files in `src/mainview/`
-- **Tailwind theme**: Edit `tailwind.config.js`
-- **Vite settings**: Edit `vite.config.ts`
-- **Window settings**: Edit `src/bun/index.ts`
-- **App metadata**: Edit `electrobun.config.ts`
+No license has been chosen yet; all rights reserved unless stated otherwise.

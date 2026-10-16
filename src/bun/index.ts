@@ -2,6 +2,7 @@ import { BrowserWindow, Updater, Utils } from "electrobun/main";
 import http, { createServer } from "node:http";
 import https from "node:https";
 import { strFromU8, unzipSync, unzlibSync } from "fflate";
+import { PDFDocument, rgb, StandardFonts, type PDFFont } from "pdf-lib";
 import {
 	copyFileSync,
 	existsSync,
@@ -135,13 +136,13 @@ const DEFAULT_MARKDOWN_CSS = `
 `;
 
 const state = {
-	workspaceRoot: null as string | null,
+	workspaceRoot: loadSavedWorkspace(),
 };
 
 const NOVEL_FILE = ".novel.json";
 // A folder's note is <Folder>/<Folder>.md; it is hidden from the tree. Elements and Research are novel-level folders used by their own tabs.
 const folderNoteName = (dir: string) => `${basename(dir)}.md`;
-const TAB_FOLDERS = ["Elements", "Research"];
+const TAB_FOLDERS = ["Elements", "Research", "Drafts"];
 
 function safeName(name: string) {
 	return name.replace(/[\\/:*?"<>|]/g, "").replace(/\s+/g, " ").trim().slice(0, 80);
@@ -988,6 +989,589 @@ function deleteSection(novelDir: string, rawName: string) {
 	rmSync(dir, { recursive: true, force: true });
 }
 
+function searchNovel(dir: string, query: string, caseSensitive: boolean, hits: Array<{ path: string; line: number; text: string }>) {
+	const needle = caseSensitive ? query : query.toLowerCase();
+	for (const entry of sortedEntries(dir)) {
+		if (hits.length >= 200) return;
+		const full = join(dir, entry.name);
+		if (entry.isDirectory()) {
+			searchNovel(full, query, caseSensitive, hits);
+		} else if (entry.name.toLowerCase().endsWith(".md")) {
+			readFileSync(full, "utf8").split("\n").forEach((line, index) => {
+				if ((caseSensitive ? line : line.toLowerCase()).includes(needle) && hits.length < 200) hits.push({ path: full, line: index, text: line.trim().slice(0, 200) });
+			});
+		}
+	}
+}
+
+// The chosen workspace is remembered between launches.
+function appConfigFile() {
+	const base =
+		process.platform === "darwin"
+			? join(homedir(), "Library", "Application Support")
+			: process.platform === "win32"
+				? (process.env.APPDATA ?? join(homedir(), "AppData", "Roaming"))
+				: (process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"));
+	return join(base, "GhoaxtWriter", "app.json");
+}
+
+function loadSavedWorkspace(): string | null {
+	try {
+		const saved = JSON.parse(readFileSync(appConfigFile(), "utf8")).workspace;
+		return typeof saved === "string" && existsSync(saved) && statSync(saved).isDirectory() ? saved : null;
+	} catch {
+		return null;
+	}
+}
+
+function saveWorkspace(path: string) {
+	try {
+		mkdirSync(dirname(appConfigFile()), { recursive: true });
+		writeFileSync(appConfigFile(), JSON.stringify({ workspace: path }, null, 2));
+	} catch (error) {
+		console.error("Couldn't remember the workspace:", error);
+	}
+}
+
+// ---- PDF drafts: double-spaced pages with room to annotate between the lines ----
+
+type DraftOptions = { spacing: number; fontSize: number; newPageChapters: boolean };
+type DraftOp = { kind: "heading"; act: boolean; text: string } | { kind: "scene"; markdown: string };
+type InlineRun = { text: string; bold: boolean; italic: boolean };
+
+function collectDraft(dir: string, ops: DraftOp[]) {
+	for (const entry of sortedEntries(dir)) {
+		const full = join(dir, entry.name);
+		if (entry.isDirectory()) {
+			ops.push({ kind: "heading", act: listDirs(full).length > 0, text: entry.name });
+			collectDraft(full, ops);
+		} else if (entry.name.toLowerCase().endsWith(".md")) {
+			const markdown = readFileSync(full, "utf8");
+			if (markdown.trim()) ops.push({ kind: "scene", markdown });
+		}
+	}
+}
+
+function inlineRuns(raw: string): InlineRun[] {
+	const text = raw
+		.replace(/<[^>]+>/g, "")
+		.replace(/\[\[([^\]]+)\]\]/g, "$1")
+		.replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+		.replace(/`([^`]+)`/g, "$1")
+		.replace(/~~([^~]+)~~/g, "$1");
+	const runs: InlineRun[] = [];
+	let last = 0;
+	for (const match of text.matchAll(/\*\*\*([^*]+)\*\*\*|\*\*([^*]+)\*\*|\*([^*]+)\*|(?<!\w)_([^_]+)_(?!\w)/g)) {
+		const at = match.index ?? 0;
+		if (at > last) runs.push({ text: text.slice(last, at), bold: false, italic: false });
+		if (match[1] !== undefined) runs.push({ text: match[1], bold: true, italic: true });
+		else if (match[2] !== undefined) runs.push({ text: match[2], bold: true, italic: false });
+		else runs.push({ text: match[3] ?? match[4], bold: false, italic: true });
+		last = at + match[0].length;
+	}
+	if (last < text.length) runs.push({ text: text.slice(last), bold: false, italic: false });
+	return runs;
+}
+
+async function buildDraftPdf(novelDir: string, meta: any, options: DraftOptions) {
+	const ops: DraftOp[] = [];
+	collectDraft(novelDir, ops);
+	if (!ops.some((op) => op.kind === "scene")) throw new HttpError(400, "There's nothing to export yet.");
+	const words = ops.reduce((sum, op) => (op.kind === "scene" ? sum + (op.markdown.match(/\S+/g) ?? []).length : sum), 0);
+
+	const doc = await PDFDocument.create();
+	const regular = await doc.embedFont(StandardFonts.TimesRoman);
+	const bold = await doc.embedFont(StandardFonts.TimesRomanBold);
+	const italic = await doc.embedFont(StandardFonts.TimesRomanItalic);
+	const boldItalic = await doc.embedFont(StandardFonts.TimesRomanBoldItalic);
+	const supported = new Set(regular.getCharacterSet());
+	const clean = (text: string) =>
+		Array.from(decodeEntities(text).replace(/\u00a0/g, " ").replace(/[\u2010\u2011]/g, "-"))
+			.map((char) => (supported.has(char.codePointAt(0) ?? 0) ? char : "?"))
+			.join("");
+	const fontFor = (run: { bold: boolean; italic: boolean }) => (run.bold ? (run.italic ? boldItalic : bold) : run.italic ? italic : regular);
+
+	const W = 612;
+	const H = 792;
+	const marginX = 90;
+	const top = 90;
+	const bottom = 72;
+	const textWidth = W - marginX * 2;
+	const size = options.fontSize;
+	// Single spacing is about 1.15 times the type size; the chosen multiplier leaves room for handwriting.
+	const lineHeightFor = (sz: number) => sz * 1.15 * options.spacing;
+	const title = clean(String(meta.title ?? "Untitled"));
+	const author = clean(String(meta.author ?? ""));
+	const surname = author.trim().split(/\s+/).pop() ?? "";
+	const dateLabel = new Date().toISOString().slice(0, 10);
+	const grey = rgb(0.45, 0.45, 0.45);
+
+	let page = doc.addPage([W, H]);
+	let pageNumber = 1;
+	let y = H - top;
+	let pageHasContent = false;
+
+	const center = (text: string, yy: number, sz: number, font: PDFFont) => {
+		const width = font.widthOfTextAtSize(text, sz);
+		const fitted = width > textWidth ? sz * (textWidth / width) : sz;
+		page.drawText(text, { x: (W - font.widthOfTextAtSize(text, fitted)) / 2, y: yy, size: fitted, font });
+	};
+
+	center(title, H * 0.62, 30, bold);
+	if (meta.subtitle) center(clean(String(meta.subtitle)), H * 0.62 - 40, 16, italic);
+	if (author) center(`by ${author}`, H * 0.62 - 80, 14, regular);
+	page.drawText(`${words.toLocaleString()} words · Draft ${dateLabel}`, { x: marginX, y: 80, size: 10, font: regular, color: grey });
+
+	function newPage() {
+		page = doc.addPage([W, H]);
+		pageNumber++;
+		y = H - top;
+		pageHasContent = false;
+		const header = `${surname ? `${surname} / ` : ""}${title.toUpperCase()} / ${pageNumber}`;
+		page.drawText(header, { x: W - marginX - regular.widthOfTextAtSize(header, 10), y: H - 50, size: 10, font: regular });
+		page.drawText(`Draft ${dateLabel}`, { x: marginX, y: 36, size: 8, font: regular, color: grey });
+	}
+	newPage();
+
+	type Seg = { text: string; font: PDFFont };
+	function wrap(runs: InlineRun[], first: number, rest: number, sz: number) {
+		const lines: Seg[][] = [];
+		let line: Seg[] = [];
+		let used = 0;
+		let available = textWidth - first;
+		const flush = () => {
+			while (line.length && !line[line.length - 1].text.trim()) line.pop();
+			lines.push(line);
+			line = [];
+			used = 0;
+			available = textWidth - rest;
+		};
+		for (const run of runs) {
+			const font = fontFor(run);
+			for (const token of run.text.match(/\S+|\s+/g) ?? []) {
+				if (/^\s+$/.test(token)) {
+					if (line.length) {
+						line.push({ text: " ", font });
+						used += font.widthOfTextAtSize(" ", sz);
+					}
+					continue;
+				}
+				const width = font.widthOfTextAtSize(token, sz);
+				if (used + width > available && line.length) flush();
+				line.push({ text: token, font });
+				used += width;
+			}
+		}
+		if (line.length) flush();
+		return lines;
+	}
+
+	function paragraph(text: string, o: { indent?: number; first?: number; center?: boolean; bold?: boolean; size?: number } = {}) {
+		const sz = o.size ?? size;
+		const lh = lineHeightFor(sz);
+		const indent = o.indent ?? 0;
+		const first = o.first ?? 0;
+		const runs = inlineRuns(clean(text)).map((run) => ({ ...run, bold: run.bold || !!o.bold }));
+		wrap(runs, indent + first, indent, sz).forEach((segs, index) => {
+			if (y - lh < bottom) newPage();
+			y -= lh;
+			const lineWidth = segs.reduce((sum, seg) => sum + seg.font.widthOfTextAtSize(seg.text, sz), 0);
+			let x = marginX + indent + (index === 0 ? first : 0);
+			if (o.center) x = marginX + (textWidth - lineWidth) / 2;
+			for (const seg of segs) {
+				page.drawText(seg.text, { x, y, size: sz, font: seg.font });
+				x += seg.font.widthOfTextAtSize(seg.text, sz);
+			}
+			pageHasContent = true;
+		});
+	}
+
+	let lastWasScene = false;
+	for (const op of ops) {
+		if (op.kind === "heading") {
+			if (options.newPageChapters && pageHasContent) newPage();
+			y -= lineHeightFor(size) * 2;
+			paragraph(op.text, { center: true, bold: true, size: op.act ? size + 10 : size + 4 });
+			y -= lineHeightFor(size) / 2;
+			lastWasScene = false;
+			continue;
+		}
+		if (lastWasScene) paragraph("#", { center: true });
+		lastWasScene = true;
+
+		let afterBreak = true;
+		let inPoetry = false;
+		for (const raw of op.markdown.split("\n")) {
+			const line = raw.trimEnd();
+			const trimmed = line.trim();
+			if (!trimmed) continue;
+			if (trimmed === "::: poetry") { inPoetry = true; continue; }
+			if (trimmed === ":::") { inPoetry = false; afterBreak = true; continue; }
+			if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) { paragraph("#", { center: true }); afterBreak = true; continue; }
+			const heading = /^(#{1,6})\s+(.*)$/.exec(trimmed);
+			if (heading) { paragraph(heading[2], { center: true, bold: true, size: size + (heading[1].length === 1 ? 3 : 1) }); afterBreak = true; continue; }
+			if (inPoetry) { paragraph(trimmed, { indent: 54 }); continue; }
+			if (trimmed.startsWith(">")) { paragraph(trimmed.replace(/^>\s?/, ""), { indent: 36 }); continue; }
+			const bullet = /^[-*+]\s+(.*)$/.exec(trimmed);
+			if (bullet) { paragraph(`\u2022 ${bullet[1]}`, { indent: 24, first: -12 }); continue; }
+			// Publishers don't indent the first paragraph after a heading or scene break.
+			paragraph(trimmed, { first: afterBreak ? 0 : 36 });
+			afterBreak = false;
+		}
+	}
+
+	return { bytes: await doc.save(), pages: pageNumber, words };
+}
+
+// ---- Manuscript import: docx, odt, rtf, txt, md, html, epub and pdf become chapters and scenes ----
+
+type ImportBlock = { kind: "heading"; level: number; text: string } | { kind: "para"; text: string } | { kind: "break" };
+type FormatSeg = { text: string; bold: boolean; italic: boolean };
+type ImportOptions = { structure: "auto" | "chapters" | "acts"; splitScenes: boolean; actName: string };
+type PlannedChapter = { title: string; scenes: string[][] };
+type PlannedAct = { title: string | null; chapters: PlannedChapter[] };
+
+const IMPORT_EXTS = ["docx", "odt", "rtf", "txt", "md", "markdown", "html", "htm", "epub", "pdf"];
+const SCENE_BREAK = /^\s*(?:(?:\*\s*){3,}|#|~{3,}|[-\u2013\u2014_=]{3,})\s*$/;
+const ACT_LIKE = /^(part|book|act)\s+([0-9ivxlc]+|one|two|three|four|five|six|seven|eight|nine|ten)\b/i;
+const CHAPTER_LIKE = /^(chapter\b|prologue\b|epilogue\b|interlude\b|preface\b|foreword\b|afterword\b)/i;
+const importSessions = new Map<string, { name: string; format: string; blocks: ImportBlock[]; warnings: string[] }>();
+
+function newToken() {
+	return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function segmentsToMarkdown(segments: FormatSeg[]) {
+	const merged: FormatSeg[] = [];
+	for (const seg of segments) {
+		const last = merged[merged.length - 1];
+		if (last && last.bold === seg.bold && last.italic === seg.italic) last.text += seg.text;
+		else merged.push({ ...seg });
+	}
+	return merged
+		.map((seg) => {
+			const marker = seg.bold && seg.italic ? "***" : seg.bold ? "**" : seg.italic ? "*" : "";
+			const parts = /^(\s*)([\s\S]*?)(\s*)$/.exec(seg.text);
+			return marker && parts?.[2] ? `${parts[1]}${marker}${parts[2]}${marker}${parts[3]}` : seg.text;
+		})
+		.join("");
+}
+
+// level: 0 paragraph, >0 heading, <0 a document title that is skipped.
+function pushBlock(blocks: ImportBlock[], text: string, level: number) {
+	const clean = text.replace(/[ \t\u00a0]+/g, " ").trim();
+	if (!clean || level < 0) return;
+	if (level > 0) blocks.push({ kind: "heading", level, text: clean.replace(/\*+/g, "").trim() });
+	else if (SCENE_BREAK.test(clean)) blocks.push({ kind: "break" });
+	else blocks.push({ kind: "para", text: clean });
+}
+
+function docxBlocks(file: string) {
+	const entries = readZipEntries(file, (name) => name === "word/document.xml");
+	const xml = strFromU8(entries["word/document.xml"] ?? new Uint8Array());
+	const blocks: ImportBlock[] = [];
+	for (const paragraph of xml.matchAll(/<w:p[ >][\s\S]*?<\/w:p>/g)) {
+		const source = paragraph[0];
+		const style = (/<w:pStyle w:val="([^"]+)"/.exec(source)?.[1] ?? "").replace(/[-_ ]/g, "");
+		const outline = /<w:outlineLvl w:val="(\d)"/.exec(source)?.[1];
+		let level = 0;
+		const named = /^heading(\d)$/i.exec(style);
+		if (named) level = Number(named[1]);
+		else if (outline !== undefined) level = Number(outline) + 1;
+		else if (/^title$/i.test(style)) level = -1;
+
+		const segments: FormatSeg[] = [];
+		for (const run of source.matchAll(/<w:r[ >][\s\S]*?<\/w:r>/g)) {
+			const props = /<w:rPr>([\s\S]*?)<\/w:rPr>/.exec(run[0])?.[1] ?? "";
+			const flag = (tag: string) => new RegExp(`<w:${tag}(?: [^>]*)?/?>`).test(props) && !new RegExp(`<w:${tag} w:val="(?:0|false)"`).test(props);
+			let text = "";
+			for (const part of run[0].matchAll(/<w:t(?: [^>]*)?>([^<]*)<\/w:t>|<w:tab\/>|<w:br[^>]*\/>/g)) text += part[1] !== undefined ? part[1] : " ";
+			if (text) segments.push({ text: decodeEntities(text), bold: flag("b"), italic: flag("i") });
+		}
+		pushBlock(blocks, level > 0 ? segments.map((seg) => seg.text).join("") : segmentsToMarkdown(segments), level);
+	}
+	return blocks;
+}
+
+function odtBlocks(file: string) {
+	const entries = readZipEntries(file, (name) => name === "content.xml");
+	const xml = strFromU8(entries["content.xml"] ?? new Uint8Array());
+	const styles: Record<string, { bold: boolean; italic: boolean }> = {};
+	for (const match of xml.matchAll(/<style:style style:name="([^"]+)"[^>]*>([\s\S]*?)<\/style:style>/g)) {
+		styles[match[1]] = { bold: /fo:font-weight="bold"/.test(match[2]), italic: /fo:font-style="italic"/.test(match[2]) };
+	}
+	const blocks: ImportBlock[] = [];
+	let current: { level: number; segments: FormatSeg[] } | null = null;
+	const formats = [{ bold: false, italic: false }];
+	const body = xml.slice(Math.max(0, xml.indexOf("<office:text")));
+	for (const token of body.matchAll(/<(\/?)text:(h|p|span|line-break|tab|s)\b([^>]*?)(\/?)>|([^<]+)/g)) {
+		if (token[5] !== undefined) {
+			if (current) current.segments.push({ text: decodeEntities(token[5]), ...formats[formats.length - 1] });
+			continue;
+		}
+		const closing = token[1] === "/";
+		const tag = token[2];
+		const attributes = token[3];
+		const selfClosing = token[4] === "/";
+		if (tag === "h" || tag === "p") {
+			if (!closing && !selfClosing) {
+				current = { level: tag === "h" ? Number(/text:outline-level="(\d+)"/.exec(attributes)?.[1] ?? 1) : 0, segments: [] };
+				formats.length = 1;
+			} else if (closing && current) {
+				pushBlock(blocks, current.level > 0 ? current.segments.map((seg) => seg.text).join("") : segmentsToMarkdown(current.segments), current.level);
+				current = null;
+			}
+		} else if (tag === "span") {
+			if (closing) {
+				if (formats.length > 1) formats.pop();
+			} else if (!selfClosing) {
+				const style = styles[/text:style-name="([^"]+)"/.exec(attributes)?.[1] ?? ""];
+				const base = formats[formats.length - 1];
+				formats.push({ bold: base.bold || !!style?.bold, italic: base.italic || !!style?.italic });
+			}
+		} else if (current && !closing) {
+			current.segments.push({ text: " ", ...formats[formats.length - 1] });
+		}
+	}
+	return blocks;
+}
+
+function htmlBlocks(html: string) {
+	const body = (/<body[^>]*>([\s\S]*)<\/body>/i.exec(html)?.[1] ?? html).replace(/<(script|style|head)[\s\S]*?<\/\1>/gi, "");
+	const blocks: ImportBlock[] = [];
+	let buffer = "";
+	let level = 0;
+	const flush = () => {
+		pushBlock(blocks, decodeEntities(buffer).replace(/\s+/g, " "), level);
+		buffer = "";
+		level = 0;
+	};
+	for (const token of body.matchAll(/<(\/?)([a-z0-9]+)\b[^>]*?>|([^<]+)/gi)) {
+		if (token[3] !== undefined) {
+			buffer += token[3];
+			continue;
+		}
+		const tag = token[2].toLowerCase();
+		const closing = token[1] === "/";
+		if (/^h[1-6]$/.test(tag)) {
+			flush();
+			if (!closing) level = Number(tag[1]);
+		} else if (["p", "div", "li", "blockquote", "tr"].includes(tag)) flush();
+		else if (tag === "br") buffer += " ";
+		else if (tag === "hr") {
+			flush();
+			blocks.push({ kind: "break" });
+		} else if (tag === "em" || tag === "i") buffer += "*";
+		else if (tag === "strong" || tag === "b") buffer += "**";
+	}
+	flush();
+	return blocks;
+}
+
+function epubBlocks(file: string) {
+	const all = unzipSync(new Uint8Array(readFileSync(file)), { filter: (entry) => /\.(xhtml|html|htm|opf|xml)$/i.test(entry.name) });
+	let order: string[] = [];
+	try {
+		const container = strFromU8(all["META-INF/container.xml"]);
+		const opfPath = /full-path="([^"]+)"/.exec(container)?.[1] ?? "";
+		const opf = strFromU8(all[opfPath]);
+		const base = opfPath.includes("/") ? opfPath.slice(0, opfPath.lastIndexOf("/") + 1) : "";
+		const manifest: Record<string, string> = {};
+		for (const item of opf.matchAll(/<item\b[^>]*>/g)) {
+			const id = /\bid="([^"]+)"/.exec(item[0])?.[1];
+			const href = /\bhref="([^"]+)"/.exec(item[0])?.[1];
+			if (id && href && !/properties="[^"]*\bnav\b/.test(item[0])) manifest[id] = href;
+		}
+		order = Array.from(opf.matchAll(/<itemref\b[^>]*idref="([^"]+)"/g)).map((match) => manifest[match[1]]).filter(Boolean).map((href) => decodeURIComponent(`${base}${href}`.split("#")[0]));
+	} catch {
+		order = [];
+	}
+	if (!order.some((name) => all[name])) order = Object.keys(all).filter((name) => /\.(xhtml|html|htm)$/i.test(name)).sort();
+	return order.filter((name) => all[name]).flatMap((name) => htmlBlocks(strFromU8(all[name])));
+}
+
+function plainBlocks(raw: string, hardWrapped = false) {
+	const lines = raw.replace(/\r/g, "").split("\n").map((line) => line.trim());
+	const filled = lines.filter(Boolean).length || 1;
+	const followedByBlank = lines.filter((line, index) => line && lines[index + 1] === "").length;
+	const separated = !hardWrapped && followedByBlank / filled >= 0.3;
+	const blocks: ImportBlock[] = [];
+	let paragraph: string[] = [];
+	const flush = () => {
+		if (paragraph.length) pushBlock(blocks, paragraph.join(" "), 0);
+		paragraph = [];
+	};
+	for (const line of lines) {
+		if (!line) {
+			flush();
+			continue;
+		}
+		const heading = /^(#{1,6})\s+(.*)$/.exec(line);
+		if (heading) {
+			flush();
+			pushBlock(blocks, heading[2], heading[1].length);
+		} else if ((ACT_LIKE.test(line) || CHAPTER_LIKE.test(line)) && line.length < 70 && !/[.!?]$/.test(line)) {
+			flush();
+			pushBlock(blocks, line, 0);
+		} else if (SCENE_BREAK.test(line)) {
+			flush();
+			blocks.push({ kind: "break" });
+		} else {
+			paragraph.push(line);
+			if (!separated && !hardWrapped) flush();
+			else if (hardWrapped && /[.!?"\u201d\u2019)]$/.test(line)) flush();
+		}
+	}
+	flush();
+	return blocks;
+}
+
+// Documents without heading styles still tend to have lines like "Chapter 3".
+function detectHeadings(blocks: ImportBlock[]) {
+	if (blocks.some((block) => block.kind === "heading")) return blocks;
+	return blocks.map((block): ImportBlock => {
+		if (block.kind !== "para" || block.text.length >= 70 || /[.!?]$/.test(block.text)) return block;
+		if (ACT_LIKE.test(block.text)) return { kind: "heading", level: 1, text: block.text };
+		if (CHAPTER_LIKE.test(block.text)) return { kind: "heading", level: 2, text: block.text };
+		return block;
+	});
+}
+
+function parseManuscript(file: string) {
+	const ext = extOf(file);
+	const warnings: string[] = [];
+	let blocks: ImportBlock[];
+	switch (ext) {
+		case "docx": blocks = docxBlocks(file); break;
+		case "odt": blocks = odtBlocks(file); break;
+		case "epub": blocks = epubBlocks(file); break;
+		case "html": case "htm": blocks = htmlBlocks(readFileSync(file, "utf8")); break;
+		case "rtf": blocks = plainBlocks(rtfToText(readFileSync(file, "latin1"))); break;
+		case "txt": case "md": case "markdown": blocks = plainBlocks(readFileSync(file, "utf8")); break;
+		case "pdf":
+			blocks = plainBlocks(pdfToText(readFileSync(file)), true);
+			warnings.push("PDF text can be incomplete or out of order, and scanned pages can't be read. Check the result.");
+			break;
+		case "doc": case "pages": throw new HttpError(400, `.${ext} files can't be read directly. Save a copy as .docx first.`);
+		default: throw new HttpError(400, `Can't import .${ext || "that"} files.`);
+	}
+	blocks = detectHeadings(blocks);
+	if (!blocks.some((block) => block.kind === "para")) throw new HttpError(400, "No text could be found in that file.");
+	return { format: ext, blocks, warnings };
+}
+
+function planImport(blocks: ImportBlock[], options: ImportOptions, fallbackTitle: string) {
+	const headings = blocks.filter((block): block is Extract<ImportBlock, { kind: "heading" }> => block.kind === "heading");
+	const levels = Array.from(new Set(headings.map((heading) => heading.level))).sort((a, b) => a - b);
+	const top = headings.filter((heading) => heading.level === levels[0]);
+	let structure = options.structure;
+	if (structure === "auto") structure = levels.length >= 2 && top.filter((heading) => ACT_LIKE.test(heading.text)).length * 2 >= top.length ? "acts" : "chapters";
+	if (structure === "acts" && levels.length < 2) structure = "chapters";
+	const actLevel = structure === "acts" ? levels[0] : null;
+	const chapterLevel = structure === "acts" ? levels[1] : (levels[0] ?? null);
+
+	const acts: PlannedAct[] = [];
+	const state = { act: null as PlannedAct | null, chapter: null as PlannedChapter | null, scene: [] as string[] };
+	const closeScene = () => {
+		if (state.scene.length && state.chapter) state.chapter.scenes.push(state.scene);
+		state.scene = [];
+	};
+	const ensureAct = () => {
+		if (!state.act) {
+			state.act = { title: structure === "chapters" && options.actName.trim() ? options.actName.trim() : null, chapters: [] };
+			acts.push(state.act);
+		}
+		return state.act;
+	};
+	const startChapter = (title: string) => {
+		closeScene();
+		state.chapter = { title, scenes: [] };
+		ensureAct().chapters.push(state.chapter);
+	};
+
+	for (const block of blocks) {
+		if (block.kind === "heading" && block.level === actLevel) {
+			closeScene();
+			state.chapter = null;
+			state.act = { title: block.text, chapters: [] };
+			acts.push(state.act);
+			continue;
+		}
+		if (block.kind === "heading" && block.level === chapterLevel) {
+			startChapter(block.text);
+			continue;
+		}
+		if (!state.chapter) startChapter(chapterLevel === null ? fallbackTitle : "Opening");
+		if (block.kind === "heading") state.scene.push(`${"#".repeat(Math.min(6, Math.max(2, block.level - (chapterLevel ?? 1) + 1)))} ${block.text}`);
+		else if (block.kind === "break") {
+			if (options.splitScenes) closeScene();
+			else state.scene.push("***");
+		} else state.scene.push(block.text);
+	}
+	closeScene();
+	for (const act of acts) act.chapters = act.chapters.filter((chapter) => chapter.scenes.length > 0);
+	return { acts: acts.filter((act) => act.chapters.length > 0), structure, levels };
+}
+
+function summarizePlan(plan: ReturnType<typeof planImport>) {
+	const words = (paragraphs: string[]) => paragraphs.join(" ").match(/\S+/g)?.length ?? 0;
+	return {
+		structure: plan.structure,
+		levels: plan.levels,
+		acts: plan.acts.map((act) => ({
+			title: act.title,
+			chapters: act.chapters.map((chapter) => ({ title: chapter.title, scenes: chapter.scenes.length, words: chapter.scenes.reduce((sum, scene) => sum + words(scene), 0) })),
+		})),
+	};
+}
+
+function writeImport(novelDir: string, acts: PlannedAct[]) {
+	const folderName = (title: string, fallback: string) => safeName(title).replace(/[. ]+$/, "") || fallback;
+	let chapters = 0;
+	let scenes = 0;
+	let words = 0;
+	const writeChapters = (parent: string, list: PlannedChapter[]) => {
+		const names: string[] = [];
+		for (const chapter of list) {
+			const folder = uniqueName(parent, folderName(chapter.title, "Chapter"));
+			mkdirSync(join(parent, folder), { recursive: true });
+			chapter.scenes.forEach((paragraphs, index) => {
+				const text = `${paragraphs.join("\n\n")}\n`;
+				writeFileSync(join(parent, folder, `Scene ${index + 1}.md`), text, "utf8");
+				scenes++;
+				words += text.match(/\S+/g)?.length ?? 0;
+			});
+			chapters++;
+			names.push(folder);
+		}
+		return names;
+	};
+
+	const rootNames: string[] = [];
+	for (const act of acts) {
+		if (act.title) {
+			const folder = uniqueName(novelDir, folderName(act.title, "Act"));
+			mkdirSync(join(novelDir, folder), { recursive: true });
+			writeFileSync(join(novelDir, folder, ".order.json"), JSON.stringify(writeChapters(join(novelDir, folder), act.chapters), null, 2));
+			rootNames.push(folder);
+		} else {
+			rootNames.push(...writeChapters(novelDir, act.chapters));
+		}
+	}
+	// Imported material goes after whatever is already in the novel.
+	const existing = sortedEntries(novelDir).map((entry) => entry.name).filter((name) => !rootNames.includes(name));
+	writeFileSync(join(novelDir, ".order.json"), JSON.stringify([...existing, ...rootNames], null, 2));
+	return { chapters, scenes, words };
+}
+
+function importOptions(payload: any): ImportOptions {
+	return {
+		structure: payload.structure === "chapters" || payload.structure === "acts" ? payload.structure : "auto",
+		splitScenes: payload.splitScenes !== false,
+		actName: String(payload.actName ?? ""),
+	};
+}
+
 function addAuthor(root: string, name: string) {
 	const authors = readAuthors(root);
 	if (!authors.includes(name)) authors.push(name);
@@ -1150,6 +1734,7 @@ async function handleApiRequest(req: any, res: any) {
 			return;
 		}
 		state.workspaceRoot = chosen;
+		saveWorkspace(chosen);
 		ensuredDirectory: ensureWorkspaceSettings(chosen);
 		sendJson(res, {
 			workspace: chosen,
@@ -1189,7 +1774,7 @@ async function handleApiRequest(req: any, res: any) {
 		return sendJson(res, readResearch(novelDir));
 	}
 
-	const RESEARCH_POSTS = ["/api/elements/save", "/api/elements/delete", "/api/research/save", "/api/research/delete", "/api/research/move", "/api/research/link", "/api/research/refresh", "/api/research/import", "/api/research/section", "/api/research/section/delete", "/api/open"];
+	const RESEARCH_POSTS = ["/api/elements/save", "/api/elements/delete", "/api/research/save", "/api/research/delete", "/api/research/move", "/api/research/link", "/api/research/refresh", "/api/research/import", "/api/research/section", "/api/research/section/delete", "/api/export/pdf", "/api/import/pick", "/api/import/plan", "/api/import/commit", "/api/open"];
 	if (state.workspaceRoot && req.method === "POST" && RESEARCH_POSTS.includes(pathname)) {
 		const root = state.workspaceRoot;
 		const payload = await parseJsonBody(req);
@@ -1212,6 +1797,39 @@ async function handleApiRequest(req: any, res: any) {
 					return sendJson(res, { id: relocateItem(novelDir, String(payload.id ?? ""), payload.section ? String(payload.section) : null) });
 				case "/api/research/link":
 					return sendJson(res, await addResearchLink(novelDir, String(payload.url ?? ""), payload.section ? String(payload.section) : null));
+				case "/api/export/pdf": {
+					const meta = readNovel(novelDir) ?? {};
+					const spacing = Math.max(1, Math.min(4, Number(payload.spacing) || 2));
+					const fontSize = Math.max(9, Math.min(16, Number(payload.fontSize) || 12));
+					const { bytes, pages, words } = await buildDraftPdf(novelDir, meta, { spacing, fontSize, newPageChapters: payload.newPageChapters !== false });
+					const dir = join(novelDir, "Drafts");
+					mkdirSync(dir, { recursive: true });
+					const name = uniqueName(dir, `${safeName(String(meta.title ?? "Draft")) || "Draft"} - draft ${new Date().toISOString().slice(0, 10)}.pdf`);
+					writeFileSync(join(dir, name), bytes);
+					return sendJson(res, { path: join(dir, name), name, pages, words });
+				}
+				case "/api/import/pick": {
+					const variants = IMPORT_EXTS.flatMap((ext) => [ext, ext.toUpperCase(), `*.${ext}`, `*.${ext.toUpperCase()}`]).join(",");
+					const picked = await Utils.openFileDialog({ startingFolder: homedir(), allowedFileTypes: variants, canChooseFiles: true, canChooseDirectory: false, allowsMultipleSelection: false });
+					const source = picked[0];
+					if (!source || !existsSync(source)) return sendJson(res, { token: null });
+					if (statSync(source).size > MAX_FILE_BYTES) throw new HttpError(413, "That file is too large");
+					const parsed = parseManuscript(source);
+					const token = newToken();
+					importSessions.set(token, { name: basename(source), format: parsed.format, blocks: parsed.blocks, warnings: parsed.warnings });
+					while (importSessions.size > 5) importSessions.delete(importSessions.keys().next().value as string);
+					return sendJson(res, { token, name: basename(source), format: parsed.format, warnings: parsed.warnings });
+				}
+				case "/api/import/plan":
+				case "/api/import/commit": {
+					const session = importSessions.get(String(payload.token ?? ""));
+					if (!session) throw new HttpError(404, "That import has expired. Choose the file again.");
+					const plan = planImport(session.blocks, importOptions(payload), stem(session.name));
+					if (pathname === "/api/import/plan") return sendJson(res, summarizePlan(plan));
+					const result = writeImport(novelDir, plan.acts);
+					importSessions.delete(String(payload.token));
+					return sendJson(res, result);
+				}
 				case "/api/research/refresh":
 					return sendJson(res, await refreshResearchLink(novelDir, String(payload.id ?? "")));
 				case "/api/research/import": {
@@ -1234,7 +1852,7 @@ async function handleApiRequest(req: any, res: any) {
 					// /api/open: a web link, or a file inside Elements/Research.
 					if (typeof payload.url === "string") {
 						const target = new URL(payload.url);
-						if (target.protocol === "http:" || target.protocol === "https:") Utils.openExternal(target.toString());
+						if (["http:", "https:", "mailto:"].includes(target.protocol)) Utils.openExternal(target.toString());
 						return sendJson(res, { ok: true });
 					}
 					const full = resolve(novelDir, String(payload.file ?? ""));
@@ -1248,6 +1866,56 @@ async function handleApiRequest(req: any, res: any) {
 			const status = error instanceof HttpError ? error.status : 502;
 			return sendJson(res, { error: error instanceof Error ? error.message : "Request failed" }, status);
 		}
+	}
+
+	if (state.workspaceRoot && pathname === "/api/stats" && req.method === "GET") {
+		const novelDir = novelDirFrom(state.workspaceRoot, url.searchParams.get("novel") ?? "");
+		if (!novelDir) return sendJson(res, { words: {} });
+		const all: Record<string, { excerpt: string; words: number }> = {};
+		collectExcerpts(novelDir, all);
+		return sendJson(res, { words: Object.fromEntries(Object.entries(all).map(([path, info]) => [path, info.words])) });
+	}
+
+	if (state.workspaceRoot && pathname === "/api/search" && req.method === "GET") {
+		const novelDir = novelDirFrom(state.workspaceRoot, url.searchParams.get("novel") ?? "");
+		const query = url.searchParams.get("q") ?? "";
+		if (!novelDir || !query) return sendJson(res, { hits: [] });
+		const hits: Array<{ path: string; line: number; text: string }> = [];
+		searchNovel(novelDir, query, url.searchParams.get("case") === "1", hits);
+		return sendJson(res, { hits });
+	}
+
+	if (pathname === "/api/reveal" && req.method === "POST" && state.workspaceRoot) {
+		const payload = await parseJsonBody(req);
+		const target = resolve(String(payload.path ?? ""));
+		if (!isInsideRoot(state.workspaceRoot, target) || !existsSync(target)) return sendJson(res, { error: "Invalid path" }, 400);
+		Utils.showItemInFolder(target);
+		return sendJson(res, { ok: true });
+	}
+
+	if (pathname === "/api/window" && req.method === "POST") {
+		const payload = await parseJsonBody(req);
+		const win = mainWindow as any;
+		switch (String(payload.action)) {
+			case "minimize": win.minimize(); break;
+			case "maximize": win.maximize(); break;
+			case "unmaximize": win.unmaximize(); break;
+			case "fullscreen": win.setFullScreen(!!payload.value); break;
+			case "alwaysOnTop": win.setAlwaysOnTop(!!payload.value); break;
+			case "devtools": win.webview?.toggleDevTools?.(); break;
+			case "close":
+			case "quit":
+				sendJson(res, { ok: true });
+				setTimeout(() => {
+					if (payload.action === "quit" && typeof (Utils as any).quit === "function") (Utils as any).quit();
+					else if (payload.action === "close") win.close();
+					else process.exit(0);
+				}, 80);
+				return;
+			default:
+				return sendJson(res, { error: "Unknown action" }, 400);
+		}
+		return sendJson(res, { ok: true });
 	}
 
 	if (pathname === "/api/pick-image" && req.method === "POST") {
