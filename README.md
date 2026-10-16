@@ -2,6 +2,8 @@
 
 A distraction-free, novel-first desktop writing app. Your work is stored as plain Markdown files in a local workspace folder, organised as shelves, novels, acts, chapters and scenes.
 
+This may seem similar to other tools you are aware of, and that is by design. My thought process behind making this app was: I absolutely love NEO by Hugh Howey, and it is *almost* exactly what I want out of a writing app. Besides the fact the local manuscript files are .html and not markdown, and its use of AI. I also love LivingWriter which has been my software of choice for years, but again, not keen on the AI features and really don't like the lack of local files at all. Obsidian is fantastic, especially for compiling research notes together with the manuscript and having everything all in one place, but even with the best plugins for novel writing, it just doesn't make me want to write. So GhoaxtWriter was born (named such because I'm fairly sure GhostWriter had been taken) as a markdown-based manuscript editor that makes me want to write as much as NEO and LivingWriter do, but with the convenience that markdown offers and the ability to seamlessly integrate with Obsidian (when you start the app, choose a folder in your Obsidian vault as the workspace and from then on, you can work in either app as you wish.)
+
 ## Features
 
 - Single-panel live Markdown editor with focus mode, typewriter scrolling, vim keys and customisable shortcuts
@@ -9,8 +11,8 @@ A distraction-free, novel-first desktop writing app. Your work is stored as plai
 - Planning, Elements (`[[links]]`) and Research tabs
 - Word-count goals, per-chapter and per-scene word counts
 - Import manuscripts (docx, odt, html, epub, rtf, pdf, plain text)
-- Export drafts to PDF, or compose an email draft
-- Typography and manuscript formatting controls
+- Export drafts to PDF and quickly email them to yourself
+- Typography and manuscript formatting controls including automatic drop caps
 
 Generated covers are drawn entirely from code-made vector shapes; no third-party artwork is bundled.
 
