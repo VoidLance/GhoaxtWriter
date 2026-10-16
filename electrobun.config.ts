@@ -4,7 +4,8 @@ export default {
 	app: {
 		name: "GhoaxtWriter",
 		identifier: "dev.ghoaxtwriter.app",
-		version: "0.0.0.7",
+		version: "1.0.0",
+		description: "A distraction-free, novel-first writing app with a live Markdown editor, planning tools and manuscript import/export.",
 	},
 	build: {
 		mainProcess: "cottontail",
@@ -20,6 +21,7 @@ export default {
 		watchIgnore: ["dist/**"],
 		mac: {
 			bundleCEF: false,
+			icons: "assets/icon.iconset",
 		},
 		linux: {
 			bundleCEF: true,
@@ -31,10 +33,20 @@ export default {
     		flatpak: {
       			enabled: true,
       			outputPath: "flatpak",
+				finishArgs: [
+					"--share=ipc",
+					"--share=network",
+					"--socket=wayland",
+					"--socket=x11",
+					"--socket=pulseaudio",
+					"--device=dri",
+					"--filesystem=home",
+				],
 			},
 		},
 		win: {
 			bundleCEF: false,
+			icon: "assets/icon.ico",
 		},
 	},
 } satisfies ElectrobunConfig;

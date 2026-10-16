@@ -28,6 +28,23 @@ Generated covers are drawn entirely from code-made vector shapes; no third-party
 
 3. The installer places the app in `~/.local/share/` and creates a desktop shortcut. Launch GhoaxtWriter from your application menu.
 
+## Installation (Flatpak)
+
+Download `GhoaxtWriter-<version>-x86_64.flatpak` from the release, then:
+
+```bash
+flatpak install --user GhoaxtWriter-1.0.0-x86_64.flatpak
+flatpak run dev.ghoaxtwriter.app
+```
+
+The Flatpak needs the GNOME 50 runtime (installed automatically from Flathub if the Flathub remote is configured). Don't run it at the same time as the installer version; they share the same profile and local port.
+
+To build the bundle yourself, install `org.flatpak.Builder` and the `org.gnome.Platform//50` and `org.gnome.Sdk//50` runtimes from Flathub, then run `hutch run build` followed by `python3 scripts/build-flatpak.py`.
+
+## Windows and macOS
+
+Icons for both platforms are configured (`assets/icon.ico`, `assets/icon.iconset`), but each platform's package must be built on that OS with `hutch run build`.
+
 ## Building from source
 
 Requires Hutch (the Electrobun toolchain used by this project).
