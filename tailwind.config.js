@@ -1,9 +1,11 @@
 /** @type {import('tailwindcss').Config} */
+import { fileURLToPath } from "node:url";
+
 const colors = "(slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)";
 const shades = "(50|100|200|300|400|500|600|700|800|900|950)";
 
 // Absolute path: the dev server's cwd is not always the project root.
-const root = new URL(".", import.meta.url).pathname;
+const root = fileURLToPath(new URL(".", import.meta.url)).replace(/\\/g, "/");
 
 export default {
 	content: [`${root}src/mainview/**/*.{html,js,ts,jsx,tsx}`],
