@@ -1,14 +1,27 @@
+import { localDateKey } from "../shared/dates";
+
 export type Goals = {
   overall?: { target: number; start: string; end: string } | null;
   daily?: number | null;
-  chapters?: Record<string, number>;
+  chapters?: Record<string, number>; // Novel-relative paths for folders and scenes.
 };
 
-const pad = (n: number) => String(n).padStart(2, "0");
+export function remapGoalPaths(goals: Goals, oldPath: string, newPath: string | null): Goals {
+  if (!goals.chapters || oldPath === newPath) return goals;
+  const entries = Object.entries(goals.chapters);
+  const matches = (path: string) => path === oldPath || path.startsWith(`${oldPath}/`);
+  if (!entries.some(([path]) => matches(path))) return goals;
+  const chapters = Object.fromEntries(entries.filter(([path]) => !matches(path)));
+  if (newPath !== null) {
+    for (const [path, target] of entries) {
+      if (matches(path)) chapters[newPath + path.slice(oldPath.length)] = target;
+    }
+  }
+  return { ...goals, chapters };
+}
 
 export function todayKey() {
-  const now = new Date();
-  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  return localDateKey();
 }
 
 export function daysBetween(from: string, to: string) {
@@ -18,7 +31,7 @@ export function daysBetween(from: string, to: string) {
 export function addDays(date: string, days: number) {
   const next = new Date(`${date}T00:00:00`);
   next.setDate(next.getDate() + days);
-  return `${next.getFullYear()}-${pad(next.getMonth() + 1)}-${pad(next.getDate())}`;
+  return localDateKey(next);
 }
 
 // An explicit daily goal wins; otherwise it is worked out from the overall target and deadline.

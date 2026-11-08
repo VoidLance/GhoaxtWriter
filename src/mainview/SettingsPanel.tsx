@@ -2,6 +2,7 @@ import { useState } from "react";
 import { defaultPrefs, type ColumnWidth, type Prefs, type Tab } from "./prefs";
 import { Check, field, ghost, Row, Section } from "./controls";
 import { TypographyControls } from "./TypographyControls";
+import { DATE_FORMATS, isDateFormat } from "../shared/dates";
 
 type StyleElement = { key: string; label: string; fallback: string };
 
@@ -73,6 +74,13 @@ export function SettingsPanel(props: Props) {
       </Section>
 
       <Section title="Display">
+        <Row label="Date format">
+          <select className={field} value={prefs.dateFormat} onChange={(event) => {
+            if (isDateFormat(event.target.value)) setPrefs({ dateFormat: event.target.value });
+          }}>
+            {DATE_FORMATS.map((format) => <option key={format} value={format} style={{ color: "#111827" }}>{format}</option>)}
+          </select>
+        </Row>
         <Check label="Show sidebar" checked={prefs.showSidebar} onChange={(showSidebar) => setPrefs({ showSidebar })} />
         <Check label="Show status bar" checked={prefs.showStatus} onChange={(showStatus) => setPrefs({ showStatus })} />
         <Check label="Word count in status bar" checked={prefs.showWordCount} onChange={(showWordCount) => setPrefs({ showWordCount })} />

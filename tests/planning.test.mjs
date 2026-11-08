@@ -22,8 +22,8 @@ const tree = [{
   }],
 }];
 
-function renderPlanning(showWords, format) {
-  const goals = { "/novel/Act/Chapter": 1000 };
+function renderPlanning(showWords, format, sceneGoal) {
+  const goals = { "/novel/Act/Chapter": 1000, "/novel/Act/Chapter/Scene.md": sceneGoal };
   return renderToStaticMarkup(React.createElement(Planning, {
     tree,
     novelPath: "/novel",
@@ -49,6 +49,16 @@ test("planning cards use the selected goal display and retain plain counts witho
 
   const count = renderPlanning(true, { count: true, ofGoal: false, percent: false });
   assert.equal((count.match(/>0<\/span>/g) ?? []).length, 3);
+});
+
+test("scene cards use their own goal and display format", () => {
+  const combined = renderPlanning(true, { count: true, ofGoal: true, percent: true }, 500);
+  assert.match(combined, />0\/500 · 0%<\/span>/);
+  assert.match(combined, />0\/1,000 · 0%<\/span>/);
+  const percent = renderPlanning(true, { count: false, ofGoal: false, percent: true }, 500);
+  assert.equal((percent.match(/>0%<\/span>/g) ?? []).length, 2);
+  const hidden = renderPlanning(false, { count: true, ofGoal: true, percent: true }, 500);
+  assert.doesNotMatch(hidden, /0\/500/);
 });
 
 test("word formats handle nonzero counts, exceeded goals and unset goals", () => {

@@ -10,7 +10,7 @@ import { ExportDialog, type ExportOptions } from "./ExportDialog";
 import { GoalsDialog } from "./GoalsDialog";
 import { FormatDialog } from "./FormatDialog";
 import { ImportDialog } from "./ImportDialog";
-import { dailyTarget, todayKey, type Goals } from "./goals";
+import { dailyTarget, remapGoalPaths, todayKey, type Goals } from "./goals";
 import { defaultTypography, ensureTypography, withTypography } from "./typography";
 import { type ElementItem, loadElements, novelFileUrl, post } from "./api";
 import Elements from "./Elements";
@@ -470,7 +470,8 @@ function App() {
     }
     if (inside(selectedFolder)) setSelectedFolder(novel?.path ?? workspace);
     setTree((await fetchTree()).tree);
-    setStatus(`Deleted: ${node.name}`);
+    const goalError = await updateGoalPaths(node.path, null);
+    setStatus(goalError ? `Deleted ${node.name}, but could not update its word goals: ${goalError}` : `Deleted: ${node.name}`);
   }
 
   function findNode(nodes: TreeNode[], path: string): TreeNode | null {
@@ -498,6 +499,24 @@ function App() {
     setSelectedFolder((prev) => remap(prev));
   }
 
+  async function updateGoalPaths(oldPath: string, newPath: string | null): Promise<string | null> {
+    if (!novel) return null;
+    const currentGoals = novel.meta.goals ?? {};
+    const nextGoals = remapGoalPaths(
+      currentGoals,
+      getRelativePath(novel.path, oldPath),
+      newPath === null ? null : getRelativePath(novel.path, newPath),
+    );
+    if (nextGoals === currentGoals) return null;
+    try {
+      const result = await post<{ meta: NovelEntry["meta"] }>(apiFetch, "/api/novel/meta", { path: novel.path, meta: { goals: nextGoals } });
+      setNovel((prev) => (prev && prev.path === novel.path ? { ...prev, meta: result.meta } : prev));
+      return null;
+    } catch (error) {
+      return errorText(error);
+    }
+  }
+
   async function renameNode(node: TreeNode) {
     if (!workspace) return;
     const current = node.type === "file" ? node.name.replace(/\.md$/i, "") : node.name;
@@ -510,7 +529,8 @@ function App() {
       });
       remapSelection(node.path, result.path);
       setTree((await fetchTree()).tree);
-      setStatus(`Renamed to ${name.trim()}`);
+      const goalError = await updateGoalPaths(node.path, result.path);
+      setStatus(goalError ? `Renamed ${node.name}, but could not update its word goals: ${goalError}` : `Renamed to ${name.trim()}`);
     } catch (error) {
       setStatus(errorText(error));
     }
@@ -525,7 +545,8 @@ function App() {
       });
       remapSelection(node.path, result.path);
       setTree((await fetchTree()).tree);
-      setStatus(`Moved ${node.name}`);
+      const goalError = await updateGoalPaths(node.path, result.path);
+      setStatus(goalError ? `Moved ${node.name}, but could not update its word goals: ${goalError}` : `Moved ${node.name}`);
     } catch (error) {
       setStatus(errorText(error));
     }
@@ -543,7 +564,7 @@ function App() {
   const ghostButton = "px-3 py-2 rounded-lg border border-slate-700 bg-transparent";
 
   function formatNodeWords(node: TreeNode, words: number) {
-    const goal = node.type === "dir" && novel ? goals.chapters?.[getRelativePath(novel.path, node.path)] : undefined;
+    const goal = novel ? goals.chapters?.[getRelativePath(novel.path, node.path)] : undefined;
     return formatWords(words, goal, prefs.wordFormat);
   }
 
@@ -719,22 +740,26 @@ function App() {
   const todayWords = Math.max(0, totalWords - wordsAtStartOfToday);
   const dailyPlan = dailyTarget(goals, wordsAtStartOfToday, today);
 
-  function folderList(nodes: TreeNode[], depth = 0): Array<{ path: string; name: string; words: number; depth: number }> {
-    return nodes.flatMap((node) => (node.type === "dir" ? [{ path: novel ? getRelativePath(novel.path, node.path) : node.path, name: node.name, words: wordsOf(node), depth }, ...folderList(node.children ?? [], depth + 1)] : []));
+  function goalEntries(nodes: TreeNode[], depth = 0): Array<{ path: string; name: string; words: number; depth: number; type: "file" | "dir" }> {
+    return nodes.flatMap((node) => [
+      { path: novel ? getRelativePath(novel.path, node.path) : node.path, name: node.name, words: wordsOf(node), depth, type: node.type },
+      ...goalEntries(node.children ?? [], depth + 1),
+    ]);
   }
 
   async function runExport(options: ExportOptions, mode: "save" | "email"): Promise<string> {
     if (!novel) throw new Error("Open a novel first.");
-    const result = await post<{ path: string; name: string; pages: number; words: number }>(apiFetch, "/api/export/pdf", {
+    const result = await post<{ path: string; name: string; pages: number; words: number; dateLabel: string }>(apiFetch, "/api/export/pdf", {
       novel: novel.path,
       spacing: options.spacing,
       fontSize: options.fontSize,
       newPageChapters: options.newPage,
+      dateFormat: prefs.dateFormat,
     });
     setPrefs({ pdfSpacing: options.spacing, pdfFontSize: options.fontSize, pdfNewPage: options.newPage, ...(mode === "email" ? { email: options.email } : {}) });
     void post(apiFetch, "/api/reveal", { path: result.path }).catch(() => undefined);
     if (mode === "email") {
-      const subject = `${novel.meta.title} - draft ${today}`;
+      const subject = `${novel.meta.title} - draft ${result.dateLabel}`;
       const body = `Draft of "${novel.meta.title}" (${result.pages} pages, ${result.words.toLocaleString()} words).\n\nThe PDF is saved at:\n${result.path}\n\nAttach it to this message before sending.`;
       await post(apiFetch, "/api/open", { novel: novel.path, url: `mailto:${options.email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}` });
     }
@@ -1132,7 +1157,8 @@ function App() {
             todayWords={todayWords}
             wordsAtStartOfToday={wordsAtStartOfToday}
             history={novel.meta.progress ?? {}}
-            chapters={folderList(tree)}
+            dateFormat={prefs.dateFormat}
+            entries={goalEntries(tree)}
             onSave={(next) => { void saveMeta({ goals: next }); setDialog(null); }}
             onClose={() => setDialog(null)}
           />

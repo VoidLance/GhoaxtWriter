@@ -10,7 +10,3 @@ html, body, #root {
 body {
   font-family: "Inter", "Segoe UI", sans-serif;
 }
-
-.goal-date::-webkit-calendar-picker-indicator {
-  display: none;
-}

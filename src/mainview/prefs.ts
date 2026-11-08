@@ -1,4 +1,5 @@
 import { useCallback, useState } from "react";
+import { DEFAULT_DATE_FORMAT, isDateFormat, type DateFormat } from "../shared/dates";
 
 export type ColumnWidth = "narrow" | "medium" | "wide" | "full";
 export type Tab = "manuscript" | "planning" | "elements" | "research";
@@ -20,6 +21,7 @@ export type Prefs = {
   showWordCount: boolean;
   showTreeWords: boolean;
   wordFormat: WordFormat;
+  dateFormat: DateFormat;
   autosaveMs: number;
   shortcuts: Record<string, string>;
   email: string;
@@ -43,6 +45,7 @@ export const defaultPrefs: Prefs = {
   showWordCount: true,
   showTreeWords: true,
   wordFormat: { count: true, ofGoal: true, percent: false },
+  dateFormat: DEFAULT_DATE_FORMAT,
   autosaveMs: 350,
   shortcuts: {},
   email: "",
@@ -61,6 +64,7 @@ function load(): Prefs {
       ...defaultPrefs,
       ...(legacy !== null ? { confirmDelete: legacy !== "false" } : {}),
       ...stored,
+      dateFormat: isDateFormat(stored.dateFormat) ? stored.dateFormat : DEFAULT_DATE_FORMAT,
       wordFormat: { ...defaultPrefs.wordFormat, ...stored.wordFormat },
       shortcuts: { ...stored.shortcuts },
     };

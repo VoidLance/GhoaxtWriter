@@ -16,6 +16,7 @@ import {
 } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { homedir } from "node:os";
+import { DEFAULT_DATE_FORMAT, formatDate, isDateFormat, localDateKey } from "../shared/dates";
 
 const DEV_SERVER_PORT = 5173;
 const DEV_SERVER_URL = `http://localhost:${DEV_SERVER_PORT}`;
@@ -1035,7 +1036,7 @@ function saveWorkspace(path: string) {
 
 // ---- PDF drafts: double-spaced pages with room to annotate between the lines ----
 
-type DraftOptions = { spacing: number; fontSize: number; newPageChapters: boolean };
+type DraftOptions = { spacing: number; fontSize: number; newPageChapters: boolean; dateLabel: string };
 type DraftOp = { kind: "heading"; act: boolean; text: string } | { kind: "scene"; markdown: string };
 type InlineRun = { text: string; bold: boolean; italic: boolean };
 
@@ -1103,7 +1104,7 @@ async function buildDraftPdf(novelDir: string, meta: any, options: DraftOptions)
 	const title = clean(String(meta.title ?? "Untitled"));
 	const author = clean(String(meta.author ?? ""));
 	const surname = author.trim().split(/\s+/).pop() ?? "";
-	const dateLabel = new Date().toISOString().slice(0, 10);
+	const dateLabel = options.dateLabel;
 	const grey = rgb(0.45, 0.45, 0.45);
 
 	let page = doc.addPage([W, H]);
@@ -1801,12 +1802,15 @@ async function handleApiRequest(req: any, res: any) {
 					const meta = readNovel(novelDir) ?? {};
 					const spacing = Math.max(1, Math.min(4, Number(payload.spacing) || 2));
 					const fontSize = Math.max(9, Math.min(16, Number(payload.fontSize) || 12));
-					const { bytes, pages, words } = await buildDraftPdf(novelDir, meta, { spacing, fontSize, newPageChapters: payload.newPageChapters !== false });
+					if (payload.dateFormat !== undefined && !isDateFormat(payload.dateFormat)) throw new HttpError(400, "Invalid date format");
+					const dateFormat = payload.dateFormat ?? DEFAULT_DATE_FORMAT;
+					const dateLabel = formatDate(localDateKey(), dateFormat);
+					const { bytes, pages, words } = await buildDraftPdf(novelDir, meta, { spacing, fontSize, newPageChapters: payload.newPageChapters !== false, dateLabel });
 					const dir = join(novelDir, "Drafts");
 					mkdirSync(dir, { recursive: true });
-					const name = uniqueName(dir, `${safeName(String(meta.title ?? "Draft")) || "Draft"} - draft ${new Date().toISOString().slice(0, 10)}.pdf`);
+					const name = uniqueName(dir, `${safeName(String(meta.title ?? "Draft")) || "Draft"} - draft ${dateLabel.replace(/\//g, "-")}.pdf`);
 					writeFileSync(join(dir, name), bytes);
-					return sendJson(res, { path: join(dir, name), name, pages, words });
+					return sendJson(res, { path: join(dir, name), name, pages, words, dateLabel });
 				}
 				case "/api/import/pick": {
 					const variants = IMPORT_EXTS.flatMap((ext) => [ext, ext.toUpperCase(), `*.${ext}`, `*.${ext.toUpperCase()}`]).join(",");

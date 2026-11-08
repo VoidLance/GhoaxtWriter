@@ -16,6 +16,10 @@ This may seem similar to other tools you are aware of, and that is by design. My
 
 Generated covers are drawn entirely from code-made vector shapes; no third-party artwork is bundled.
 
+Dates default to `DD/MM/YYYY`. Choose a different date format in Settings → Display; it applies to goal dates and exported draft dates. PDF filenames use hyphens instead of slashes.
+
+Automatic daily word goals use the remaining words at the first count of the day and the days left through the deadline. Words added today count towards that daily goal; the goals dialog shows both today's remaining words and the remaining novel total.
+
 ## Installation (Linux x64)
 
 1. Install the Linux desktop runtime dependencies. On Arch Linux and CachyOS:
