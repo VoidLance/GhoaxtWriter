@@ -56,6 +56,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          found=0
           for f in artifacts/*.dmg artifacts/*Setup.zip; do
-            [ -f "$f" ] && gh release upload "${{ inputs.tag }}" "$f" --clobber
+            if [ -f "$f" ]; then
+              gh release upload "${{ inputs.tag }}" "$f" --clobber
+              found=1
+            fi
           done
+          if [ "$found" -eq 0 ]; then
+            echo "No installer found to attach." >&2
+            exit 1
+          fi
