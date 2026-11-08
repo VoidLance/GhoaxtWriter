@@ -8,6 +8,8 @@ type Props = {
   novelPath: string;
   novelRel: string;
   apiFetch: ApiFetch;
+  showWords: boolean;
+  formatNodeWords: (node: PlanNode, words: number) => string;
   onMove: (node: PlanNode, toDir: string, before?: string) => Promise<void>;
   onOpenFile: (path: string) => void;
   onOpenFolder: (path: string) => void;
@@ -31,7 +33,7 @@ function totalWords(node: PlanNode, info: Record<string, Info>): number {
   return (node.children ?? []).reduce((sum, child) => sum + totalWords(child, info), 0);
 }
 
-function Planning({ tree, novelPath, novelRel, apiFetch, onMove, onOpenFile, onOpenFolder, onCreateScene, onCreateFolder }: Props) {
+function Planning({ tree, novelPath, novelRel, apiFetch, showWords, formatNodeWords, onMove, onOpenFile, onOpenFolder, onCreateScene, onCreateFolder }: Props) {
   const [info, setInfo] = useState<Record<string, Info>>({});
   const [over, setOver] = useState<string | null>(null);
   const dragging = useRef<string | null>(null);
@@ -109,7 +111,7 @@ function Planning({ tree, novelPath, novelRel, apiFetch, onMove, onOpenFile, onO
         >
           <div className="flex justify-between gap-2">
             <strong style={{ fontSize: 14 }}>{node.name.replace(/\.md$/i, "")}</strong>
-            <span style={{ fontSize: 11, color: "var(--muted)", whiteSpace: "nowrap" }}>{details?.words ?? 0} words</span>
+            {showWords && <span style={{ fontSize: 11, color: "var(--muted)", whiteSpace: "nowrap" }}>{formatNodeWords(node, details?.words ?? 0)}</span>}
           </div>
           <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 6, display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
             {details?.excerpt || "Empty scene"}
@@ -138,7 +140,7 @@ function Planning({ tree, novelPath, novelRel, apiFetch, onMove, onOpenFile, onO
             <strong>📁 {node.name}</strong>
             {info[node.path]?.excerpt && <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>{info[node.path].excerpt}</div>}
           </div>
-          <span style={{ fontSize: 11, color: "var(--muted)", whiteSpace: "nowrap" }}>{totalWords(node, info)} words</span>
+          {showWords && <span style={{ fontSize: 11, color: "var(--muted)", whiteSpace: "nowrap" }}>{formatNodeWords(node, totalWords(node, info))}</span>}
         </div>
         <div className="flex flex-col">
           {children.flatMap((child) => [slot(node.path, child.name, false), card(child, false)])}

@@ -18,15 +18,32 @@ Generated covers are drawn entirely from code-made vector shapes; no third-party
 
 ## Installation (Linux x64)
 
-1. Download `linux-x64-GhoaxtWriter-Setup.tar.gz` from the [latest release](https://github.com/VoidLance/GhoaxtWriter/releases).
-2. Extract and run the installer:
+1. Install the Linux desktop runtime dependencies. On Arch Linux and CachyOS:
+
+   ```bash
+   sudo pacman -S gtk3 webkit2gtk-4.1 libayatana-appindicator librsvg
+   ```
+
+   Other distributions need the corresponding GTK 3, WebKitGTK 4.1, Ayatana AppIndicator and librsvg runtime packages.
+2. Download `linux-x64-GhoaxtWriter-Setup.tar.gz` from the [latest release](https://github.com/VoidLance/GhoaxtWriter/releases).
+3. Extract and run the installer:
 
    ```bash
    tar xzf linux-x64-GhoaxtWriter-Setup.tar.gz
    ./installer
    ```
 
-3. The installer places the app in `~/.local/share/` and creates a desktop shortcut. Launch GhoaxtWriter from your application menu.
+4. The installer places the app in `~/.local/share/` and creates a desktop shortcut. Launch GhoaxtWriter from your application menu.
+
+When installing a local build, use the `installer` extracted from the newly generated `artifacts/linux-x64-GhoaxtWriter-Setup.tar.gz`. An older, separately extracted `installer` may install an outdated build or desktop shortcut.
+
+If the app does not open, launch it from a terminal to see any errors:
+
+```bash
+~/.local/share/dev.ghoaxtwriter.app/stable/app/bin/launcher
+```
+
+In particular, a missing `libayatana-appindicator3.so.1` means the Ayatana AppIndicator runtime is not installed. The app uses a bundled Chromium renderer; changing your default browser does not replace it.
 
 ## Installation (Flatpak)
 

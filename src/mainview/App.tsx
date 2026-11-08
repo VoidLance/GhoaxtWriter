@@ -542,6 +542,11 @@ function App() {
   const buttonBase = `px-3 py-2 ${tw.button}`;
   const ghostButton = "px-3 py-2 rounded-lg border border-slate-700 bg-transparent";
 
+  function formatNodeWords(node: TreeNode, words: number) {
+    const goal = node.type === "dir" && novel ? goals.chapters?.[getRelativePath(novel.path, node.path)] : undefined;
+    return formatWords(words, goal, prefs.wordFormat);
+  }
+
   function renderTree(nodes: TreeNode[], depth = 0): JSX.Element[] {
     return nodes.flatMap((node) => {
       const isNote = node.type === "dir" && selectedFile === folderNotePath(node.path);
@@ -584,7 +589,7 @@ function App() {
             {node.type === "dir" ? "📁" : "📄"} {node.name}
           </button>
           {prefs.showTreeWords && (
-            <span style={{ fontSize: 11, color: "var(--muted)", whiteSpace: "nowrap" }}>{formatWords(wordsOf(node), node.type === "dir" && novel ? goals.chapters?.[getRelativePath(novel.path, node.path)] : undefined, prefs.wordFormat)}</span>
+            <span style={{ fontSize: 11, color: "var(--muted)", whiteSpace: "nowrap" }}>{formatNodeWords(node, wordsOf(node))}</span>
           )}
           <button type="button" title="Delete" className="px-2 opacity-60" onClick={() => void deleteNode(node)}>
             ✕
@@ -1005,6 +1010,8 @@ function App() {
             novelPath={novel.path}
             novelRel={getRelativePath(workspace, novel.path)}
             apiFetch={apiFetch}
+            showWords={prefs.showTreeWords}
+            formatNodeWords={formatNodeWords}
             onMove={(node, toDir, before) => moveNode(node, toDir, before)}
             onOpenFile={(path) => {
               setTab("manuscript");

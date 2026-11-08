@@ -49,9 +49,10 @@ export function GoalsDialog({ goals, totalWords, todayWords, wordsAtStartOfToday
       <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.15em", color: "var(--muted)", marginTop: 8 }}>Whole novel</div>
       <div className="flex gap-3 flex-wrap items-center">
         <label className="flex items-center gap-2">Target <input type="number" className={field} style={{ width: 110 }} min={0} value={target} onChange={(event) => setTarget(event.target.value)} /></label>
-        <label className="flex items-center gap-2">From <input type="date" className={field} value={start} onChange={(event) => setStart(event.target.value)} /></label>
-        <label className="flex items-center gap-2">To <input type="date" className={field} value={end} onChange={(event) => setEnd(event.target.value)} /></label>
+        <label className="flex items-center gap-2">From <input type="date" className={`${field} goal-date`} value={start} onChange={(event) => setStart(event.target.value)} /></label>
+        <label className="flex items-center gap-2">To <input type="date" className={`${field} goal-date`} value={end} onChange={(event) => setEnd(event.target.value)} /></label>
       </div>
+      <div style={{ fontSize: 12, color: "var(--muted)" }}>Enter dates using the keyboard.</div>
 
       <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.15em", color: "var(--muted)", marginTop: 8 }}>Daily</div>
       <label className="flex items-center gap-2">

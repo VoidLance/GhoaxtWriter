@@ -76,7 +76,7 @@ export function SettingsPanel(props: Props) {
         <Check label="Show sidebar" checked={prefs.showSidebar} onChange={(showSidebar) => setPrefs({ showSidebar })} />
         <Check label="Show status bar" checked={prefs.showStatus} onChange={(showStatus) => setPrefs({ showStatus })} />
         <Check label="Word count in status bar" checked={prefs.showWordCount} onChange={(showWordCount) => setPrefs({ showWordCount })} />
-        <Check label="Word counts beside files and folders" checked={prefs.showTreeWords} onChange={(showTreeWords) => setPrefs({ showTreeWords })} />
+        <Check label="Word counts beside files and folders" hint="In the manuscript tree and planning cards" checked={prefs.showTreeWords} onChange={(showTreeWords) => setPrefs({ showTreeWords })} />
         <div style={{ fontSize: 12, color: "var(--muted)" }}>When a goal is set, show word counts as:</div>
         <Check label="Number" checked={prefs.wordFormat.count} onChange={(count) => setPrefs({ wordFormat: { ...prefs.wordFormat, count } })} />
         <Check label="Number / goal" checked={prefs.wordFormat.ofGoal} onChange={(ofGoal) => setPrefs({ wordFormat: { ...prefs.wordFormat, ofGoal } })} />
