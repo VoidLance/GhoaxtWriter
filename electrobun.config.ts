@@ -4,7 +4,7 @@ export default {
 	app: {
 		name: "GhoaxtWriter",
 		identifier: "dev.ghoaxtwriter.app",
-		version: "1.0.0",
+		version: "1.1.0",
 		description: "A distraction-free, novel-first writing app with a live Markdown editor, planning tools and manuscript import/export.",
 	},
 	build: {

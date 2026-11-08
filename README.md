@@ -54,7 +54,7 @@ In particular, a missing `libayatana-appindicator3.so.1` means the Ayatana AppIn
 Download `GhoaxtWriter-<version>-x86_64.flatpak` from the release, then:
 
 ```bash
-flatpak install --user GhoaxtWriter-1.0.0-x86_64.flatpak
+flatpak install --user GhoaxtWriter-1.1.0-x86_64.flatpak
 flatpak run dev.ghoaxtwriter.app
 ```
 
