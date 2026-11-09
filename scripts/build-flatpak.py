@@ -35,5 +35,8 @@ run = lambda *args: subprocess.run(args, cwd=app_dir, check=True)
 run("flatpak", "run", "org.flatpak.Builder", "--user", "--force-clean", "--repo=repo", "build-dir", manifest_path.name)
 bundle = root / "artifacts" / f"GhoaxtWriter-{version}-x86_64.flatpak"
 run("flatpak", "build-bundle", "repo", str(bundle), "dev.ghoaxtwriter.app", "stable")
+installer = root / "artifacts" / f"GhoaxtWriter-{version}-flatpak-installer.tar"
+run(sys.executable, str(root / "scripts" / "package-flatpak-installer.py"), str(bundle), str(app_dir / "repo"), version, str(installer))
 print(bundle)
+print(installer)
 sys.exit(0)

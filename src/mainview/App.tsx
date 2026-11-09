@@ -18,6 +18,8 @@ import Planning from "./Planning";
 import Research from "./Research";
 import { ChapterDialog, MatterDialog } from "./ManuscriptDialogs";
 import { manuscriptSettings, type ChapterInfo } from "../shared/manuscript";
+import { version as appVersion } from "../../package.json";
+import { InstallationDetails, type AppInfo } from "./InstallationDetails";
 
 type TreeNode = {
   name: string;
@@ -160,6 +162,8 @@ function App() {
   const [styleEditorOpen, setStyleEditorOpen] = useState(false);
   const [novel, setNovel] = useState<NovelEntry | null>(null);
   const [novelSettingsOpen, setNovelSettingsOpen] = useState(false);
+  const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
+  const [appInfoError, setAppInfoError] = useState("");
   const [chapterSettings, setChapterSettings] = useState<TreeNode | null>(null);
   const [matterPosition, setMatterPosition] = useState<"front" | "back" | null>(null);
   const [splitBusy, setSplitBusy] = useState(false);
@@ -349,6 +353,15 @@ function App() {
   useEffect(() => {
     void refreshWorkspace();
   }, []);
+
+  useEffect(() => {
+    if (dialog !== "about") return;
+    setAppInfo(null);
+    setAppInfoError("");
+    void apiFetch<AppInfo>("/api/app-info")
+      .then(setAppInfo)
+      .catch(() => setAppInfoError("Installation details unavailable. Another or older copy may be running."));
+  }, [dialog]);
 
   async function chooseWorkspace() {
     try {
@@ -1270,7 +1283,7 @@ function App() {
         {dialog === "about" && (
           <InfoDialog title="About GhoaxtWriter" onClose={() => setDialog(null)}>
             <p>A local, novel-first writing app. Everything you write is saved as ordinary files in your workspace folder, so other programs can read it too.</p>
-            <p style={{ color: "var(--muted)" }}>Version 0.0.1</p>
+            <InstallationDetails version={appVersion} info={appInfo} error={appInfoError} />
           </InfoDialog>
         )}
         {dialog === "welcome" && (

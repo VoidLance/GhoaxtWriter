@@ -1725,6 +1725,11 @@ async function handleApiRequest(req: any, res: any) {
 	const url = new URL(req.url, `http://localhost:${API_PORT}`);
 	const pathname = url.pathname;
 
+	if (pathname === "/api/app-info" && req.method === "GET") {
+		const version = await Updater.localInfo.version();
+		return sendJson(res, { version, packaging: process.env.FLATPAK_ID ? "Flatpak" : "native" });
+	}
+
 	if (pathname === "/api/workspace") {
 		if (!state.workspaceRoot) {
 			sendJson(res, { workspace: null, settings: makeDefaultSettings() }, 200);

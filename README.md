@@ -45,7 +45,7 @@ Automatic daily word goals use the remaining words at the first count of the day
    ./installer
    ```
 
-4. The installer places the app in `~/.local/share/` and creates a desktop shortcut. Launch GhoaxtWriter from your application menu.
+4. The installer places the app in `~/.local/share/` and creates a desktop shortcut. Launch GhoaxtWriter from your application menu. To update a native installation, close GhoaxtWriter and run the installer from the new release; your workspace files are not part of the application installation.
 
 When installing a local build, use the `installer` extracted from the newly generated `artifacts/linux-x64-GhoaxtWriter-Setup.tar.gz`. An older, separately extracted `installer` may install an outdated build or desktop shortcut.
 
@@ -59,14 +59,22 @@ In particular, a missing `libayatana-appindicator3.so.1` means the Ayatana AppIn
 
 ## Installation (Flatpak)
 
-Download `GhoaxtWriter-<version>-x86_64.flatpak` from the release, then:
+Download the `GhoaxtWriter-<version>-flatpak-installer.tar` archive alongside the standalone Flatpak, extract it, then choose the installation scope. To install or update a user installation (replace `VERSION` with the release version):
 
 ```bash
-flatpak install --user GhoaxtWriter-1.2.0-x86_64.flatpak
-flatpak run dev.ghoaxtwriter.app
+VERSION="<release-version>"
+mkdir -p ghoaxtwriter-flatpak-installer
+tar xf "GhoaxtWriter-$VERSION-flatpak-installer.tar" -C ghoaxtwriter-flatpak-installer
+cd ghoaxtwriter-flatpak-installer
+./install-flatpak.sh --user
+flatpak run --user dev.ghoaxtwriter.app
 ```
 
-The Flatpak needs the GNOME 50 runtime (installed automatically from Flathub if the Flathub remote is configured). Don't run it at the same time as the installer version; they share the same profile and local port.
+For a system installation, use `./install-flatpak.sh --system` and `flatpak run --system dev.ghoaxtwriter.app` instead. A named system installation can use `--installation=NAME`. Check `flatpak list --app --columns=application,installation` to find the existing installation; updating the wrong scope creates a separate copy. The installer checks the bundle and handles both upgrades and re-running the same version. Close all GhoaxtWriter windows before updating and relaunch afterwards. Using an older installer archive can downgrade the application.
+
+The installer archive was added to the updated 1.2.0 release; use the standalone `.flatpak` for earlier releases. It is also available for graphical installers. For a terminal update with that file, use `flatpak install --system --bundle --or-update GhoaxtWriter-1.2.0-x86_64.flatpak` (or `--user` for a user installation). Flatpak may report "already installed" if the exact same bundle is installed. For unattended installs using the archive, add `--yes` to accept Flatpak's prompts.
+
+The Flatpak needs the GNOME 50 runtime (installed automatically from Flathub if the Flathub remote is configured). Its local bundle origin does not provide automatic updates: download each new release to update. The native and Flatpak versions are separate installations and may have separate menu shortcuts. Don't run them at the same time; they share a local port. If an old native shortcut opens an outdated copy, launch the Flatpak explicitly as above or update/remove the native installation.
 
 ## Installation (Windows x64)
 
@@ -74,11 +82,17 @@ The Flatpak needs the GNOME 50 runtime (installed automatically from Flathub if 
 2. Extract the zip and run `GhoaxtWriter-Setup.exe`.
 3. The app is not code-signed, so Windows SmartScreen may warn you. Choose **More info**, then **Run anyway**.
 
+For an update, close the app and run the new release's setup executable; retain your workspace folder.
+
 ## Installation (macOS, Apple Silicon)
 
 1. Download `macos-arm64-GhoaxtWriter.dmg` from the [latest release](https://github.com/VoidLance/GhoaxtWriter/releases).
 2. Open the disk image and drag GhoaxtWriter into Applications.
 3. The app is not code-signed, so the first time, right-click it and choose **Open**, then confirm.
+
+To update, quit GhoaxtWriter and drag the new app into the same Applications folder, choosing **Replace** when prompted. Keep your workspace folder outside the app bundle.
+
+In the updated 1.2.0 build and later, use **Help → About GhoaxtWriter** to check the editor version and installation type. If the editor and backend versions differ, close all copies and launch the intended installation again. Older builds display an incorrect version there; for Flatpak, use `flatpak run --system --command=sh dev.ghoaxtwriter.app -c 'cat /app/Resources/version.json'` (replace `--system` with `--user` as appropriate).
 
 ## License
 
