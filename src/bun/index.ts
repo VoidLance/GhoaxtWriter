@@ -14,9 +14,11 @@ import {
 	statSync,
 	writeFileSync,
 } from "node:fs";
-import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { homedir } from "node:os";
 import { DEFAULT_DATE_FORMAT, formatDate, isDateFormat, localDateKey } from "../shared/dates";
+import { manuscriptSettings } from "../shared/manuscript";
+import { createMatter, decorateManuscript, readChapter, splitScene, updateContents, writeChapter, type ManuscriptNode } from "./manuscript";
 
 const DEV_SERVER_PORT = 5173;
 const DEV_SERVER_URL = `http://localhost:${DEV_SERVER_PORT}`;
@@ -1040,14 +1042,13 @@ type DraftOptions = { spacing: number; fontSize: number; newPageChapters: boolea
 type DraftOp = { kind: "heading"; act: boolean; text: string } | { kind: "scene"; markdown: string };
 type InlineRun = { text: string; bold: boolean; italic: boolean };
 
-function collectDraft(dir: string, ops: DraftOp[]) {
-	for (const entry of sortedEntries(dir)) {
-		const full = join(dir, entry.name);
-		if (entry.isDirectory()) {
-			ops.push({ kind: "heading", act: listDirs(full).length > 0, text: entry.name });
-			collectDraft(full, ops);
-		} else if (entry.name.toLowerCase().endsWith(".md")) {
-			const markdown = readFileSync(full, "utf8");
+function collectDraft(nodes: ManuscriptNode[], ops: DraftOp[]) {
+	for (const node of nodes) {
+		if (node.type === "dir") {
+			ops.push({ kind: "heading", act: !!node.isAct, text: node.displayName ?? node.name });
+			collectDraft(node.children ?? [], ops);
+		} else if (node.name.toLowerCase().endsWith(".md")) {
+			const markdown = readFileSync(node.path, "utf8");
 			if (markdown.trim()) ops.push({ kind: "scene", markdown });
 		}
 	}
@@ -1076,7 +1077,9 @@ function inlineRuns(raw: string): InlineRun[] {
 
 async function buildDraftPdf(novelDir: string, meta: any, options: DraftOptions) {
 	const ops: DraftOp[] = [];
-	collectDraft(novelDir, ops);
+	const tree = manuscriptTree(novelDir);
+	updateContents(tree);
+	collectDraft(tree, ops);
 	if (!ops.some((op) => op.kind === "scene")) throw new HttpError(400, "There's nothing to export yet.");
 	const words = ops.reduce((sum, op) => (op.kind === "scene" ? sum + (op.markdown.match(/\S+/g) ?? []).length : sum), 0);
 
@@ -1192,7 +1195,7 @@ async function buildDraftPdf(novelDir: string, meta: any, options: DraftOptions)
 		if (op.kind === "heading") {
 			if (options.newPageChapters && pageHasContent) newPage();
 			y -= lineHeightFor(size) * 2;
-			paragraph(op.text, { center: true, bold: true, size: op.act ? size + 10 : size + 4 });
+			if (op.text) paragraph(op.text, { center: true, bold: true, size: op.act ? size + 10 : size + 4 });
 			y -= lineHeightFor(size) / 2;
 			lastWasScene = false;
 			continue;
@@ -1206,6 +1209,7 @@ async function buildDraftPdf(novelDir: string, meta: any, options: DraftOptions)
 			const line = raw.trimEnd();
 			const trimmed = line.trim();
 			if (!trimmed) continue;
+			if (trimmed === "<!-- ghoaxtwriter:toc:start -->" || trimmed === "<!-- ghoaxtwriter:toc:end -->") continue;
 			if (trimmed === "::: poetry") { inPoetry = true; continue; }
 			if (trimmed === ":::") { inPoetry = false; afterBreak = true; continue; }
 			if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) { paragraph("#", { center: true }); afterBreak = true; continue; }
@@ -1669,6 +1673,17 @@ function listTree(root: string): Array<{ name: string; path: string; type: "file
 	});
 }
 
+function manuscriptTree(novelDir: string) {
+	return decorateManuscript(listTree(novelDir), readNovel(novelDir)?.manuscript);
+}
+
+function isGeneratedContents(file: string) {
+	const dir = dirname(file);
+	if (!existsSync(join(dir, ".chapter.json"))) return false;
+	const info = readChapter(dir);
+	return !!info.contents && basename(file) === (info.contentsFile ?? "Contents.md");
+}
+
 function parseJsonBody(req: any): Promise<any> {
 	return new Promise((resolve, reject) => {
 		let raw = "";
@@ -1775,7 +1790,7 @@ async function handleApiRequest(req: any, res: any) {
 		return sendJson(res, readResearch(novelDir));
 	}
 
-	const RESEARCH_POSTS = ["/api/elements/save", "/api/elements/delete", "/api/research/save", "/api/research/delete", "/api/research/move", "/api/research/link", "/api/research/refresh", "/api/research/import", "/api/research/section", "/api/research/section/delete", "/api/export/pdf", "/api/import/pick", "/api/import/plan", "/api/import/commit", "/api/open"];
+	const RESEARCH_POSTS = ["/api/elements/save", "/api/elements/delete", "/api/research/save", "/api/research/delete", "/api/research/move", "/api/research/link", "/api/research/refresh", "/api/research/import", "/api/research/section", "/api/research/section/delete", "/api/export/pdf", "/api/import/pick", "/api/import/plan", "/api/import/commit", "/api/open", "/api/manuscript/chapter", "/api/manuscript/matter", "/api/manuscript/split"];
 	if (state.workspaceRoot && req.method === "POST" && RESEARCH_POSTS.includes(pathname)) {
 		const root = state.workspaceRoot;
 		const payload = await parseJsonBody(req);
@@ -1784,6 +1799,35 @@ async function handleApiRequest(req: any, res: any) {
 
 		try {
 			switch (pathname) {
+				case "/api/manuscript/chapter": {
+					const dir = resolve(String(payload.path ?? ""));
+					if (dir === novelDir || !isInsideRoot(novelDir, dir) || !existsSync(dir) || !statSync(dir).isDirectory() || listDirs(dir).length || readChapter(dir).kind === "act") throw new HttpError(400, "Select a chapter folder");
+					if (typeof payload.title !== "string" || typeof payload.role !== "string" || typeof payload.numbered !== "boolean") throw new HttpError(400, "Invalid chapter settings");
+					const info = { ...readChapter(dir), title: payload.title.trim(), role: payload.role.trim(), numbered: payload.numbered };
+					writeChapter(dir, info);
+					return sendJson(res, { ok: true });
+				}
+				case "/api/manuscript/matter": {
+					const settings = manuscriptSettings(readNovel(novelDir)?.manuscript);
+					const index = Number(payload.index);
+					if (!Number.isInteger(index) || index < 0 || index >= settings.templates.length || !["front", "back"].includes(payload.position)) throw new HttpError(400, "Invalid matter template");
+					const template = settings.templates[index];
+					const name = safeName(template.name);
+					if (!name || name.startsWith(".") || TAB_FOLDERS.some((reserved) => reserved.toLowerCase() === name.toLowerCase()) || !template.role?.trim() || typeof template.content !== "string") throw new HttpError(400, "Invalid or reserved matter template name or role");
+					const folder = uniqueName(novelDir, name);
+					const names = sortedEntries(novelDir).map((entry) => entry.name);
+					const file = createMatter(novelDir, folder, template, readNovel(novelDir), payload.position, names);
+					return sendJson(res, { path: file });
+				}
+				case "/api/manuscript/split": {
+					const source = resolve(String(payload.path ?? ""));
+					const dir = dirname(source);
+					if (!isInsideRoot(novelDir, source) || dir === novelDir || !existsSync(source) || !statSync(source).isFile() || !source.toLowerCase().endsWith(".md") || basename(source) === folderNoteName(dir) || listDirs(dir).length || readChapter(dir).contents || readChapter(dir).kind === "act") throw new HttpError(400, "Open a chapter scene to create a chapter");
+					if (typeof payload.before !== "string" || typeof payload.after !== "string" || typeof payload.expected !== "string") throw new HttpError(400, "Invalid chapter split");
+					const parent = dirname(dir);
+					const names = sortedEntries(parent).map((entry) => entry.name);
+					return sendJson(res, splitScene(source, payload.expected, payload.before, payload.after, names));
+				}
 				case "/api/elements/save":
 					return sendJson(res, { item: saveElement(novelDir, payload) });
 				case "/api/elements/delete":
@@ -1950,7 +1994,13 @@ async function handleApiRequest(req: any, res: any) {
 			sendJson(res, { error: "Invalid root" }, 400);
 			return;
 		}
-		sendJson(res, { tree: listTree(scope), workspace: state.workspaceRoot });
+		try {
+			const tree = readNovel(scope) ? manuscriptTree(scope) : listTree(scope);
+			if (readNovel(scope)) updateContents(tree);
+			sendJson(res, { tree, workspace: state.workspaceRoot });
+		} catch (error) {
+			sendJson(res, { error: error instanceof Error ? error.message : "Unable to load manuscript" }, 500);
+		}
 		return;
 	}
 
@@ -2002,18 +2052,24 @@ async function handleApiRequest(req: any, res: any) {
 		if (pathname === "/api/rename") {
 			const source = resolve(root, String(payload.path ?? ""));
 			if (!isInsideRoot(root, source) || source === resolve(root) || !existsSync(source)) return sendJson(res, { error: "Invalid path" }, 400);
+			if (statSync(source).isFile() && isGeneratedContents(source)) return sendJson(res, { error: "The generated contents file cannot be renamed" }, 400);
 			let name = safeName(String(payload.name ?? ""));
 			if (!name) return sendJson(res, { error: "Name required" }, 400);
 			if (statSync(source).isFile() && !name.toLowerCase().endsWith(".md")) name += ".md";
 			const target = join(dirname(source), name);
 			if (target !== source) {
 				if (existsSync(target)) return sendJson(res, { error: "That name is already used here" }, 409);
+				const chapter = statSync(source).isDirectory() ? readChapter(source) : null;
+				if (chapter?.contents && `${name}.md`.toLowerCase() === (chapter.contentsFile ?? "Contents.md").toLowerCase()) return sendJson(res, { error: "That name conflicts with the generated contents file" }, 400);
 				const parent = dirname(source);
 				const names = sortedEntries(parent).map((e) => e.name);
 				renameSync(source, target);
 				// A folder's note carries the folder's name.
 				const oldNote = join(target, `${basename(source)}.md`);
 				if (statSync(target).isDirectory() && existsSync(oldNote)) renameSync(oldNote, join(target, `${name}.md`));
+				if (chapter && chapter.kind !== "act" && !chapter.role && (chapter.numbered !== undefined || /^chapter(?:\s+\d+)?$/i.test(basename(source)) || /^chapter(?:\s+\d+)?$/i.test(name))) {
+					writeChapter(target, { ...chapter, numbered: /^chapter(?:\s+\d+)?$/i.test(name) });
+				}
 				writeFileSync(join(parent, ".order.json"), JSON.stringify(names.map((n) => (n === basename(source) ? name : n)), null, 2));
 			}
 			return sendJson(res, { path: target });
@@ -2025,6 +2081,7 @@ async function handleApiRequest(req: any, res: any) {
 			const before = typeof payload.before === "string" ? payload.before : null;
 			const valid = isInsideRoot(root, source) && source !== resolve(root) && existsSync(source) && isInsideRoot(root, destDir) && existsSync(destDir);
 			if (!valid || destDir === source || destDir.startsWith(`${source}${sep}`)) return sendJson(res, { error: "Invalid move" }, 400);
+			if (statSync(source).isFile() && isGeneratedContents(source)) return sendJson(res, { error: "The generated contents file cannot be moved" }, 400);
 			const name = basename(source);
 			const target = join(destDir, name);
 			const oldParent = dirname(source);
@@ -2044,7 +2101,9 @@ async function handleApiRequest(req: any, res: any) {
 		if (pathname === "/api/folder") {
 			const target = resolve(root, String(payload.path ?? ""));
 			if (!isInsideRoot(root, target) || target === resolve(root)) return sendJson(res, { error: "Invalid path" }, 400);
+			if (existsSync(target)) return sendJson(res, { error: "That folder already exists" }, 409);
 			mkdirSync(target, { recursive: true });
+			if (payload.kind === "Act" || payload.kind === "Chapter") writeChapter(target, { kind: payload.kind === "Act" ? "act" : "chapter" });
 			return sendJson(res, { ok: true });
 		}
 
@@ -2120,6 +2179,7 @@ async function handleApiRequest(req: any, res: any) {
 				sendJson(res, { error: "Invalid file path" }, 400);
 				return;
 			}
+			if (isGeneratedContents(resolved)) return sendJson(res, { error: "The generated contents file is read-only in the app" }, 400);
 			const outDir = dirname(resolved);
 			mkdirSync(outDir, { recursive: true });
 			writeFileSync(resolved, String(payload.content ?? ""), "utf8");
@@ -2155,6 +2215,7 @@ async function handleApiRequest(req: any, res: any) {
 				sendJson(res, { error: "Invalid path" }, 400);
 				return;
 			}
+			if (existsSync(resolved) && statSync(resolved).isFile() && isGeneratedContents(resolved)) return sendJson(res, { error: "Delete the contents chapter instead" }, 400);
 			if (existsSync(resolved)) rmSync(resolved, { recursive: true, force: true });
 			sendJson(res, { ok: true });
 			return;

@@ -1,6 +1,8 @@
 import { marked } from "marked";
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ColumnWidth } from "./prefs";
+import { insertPoetryParagraph } from "./poetry";
+import { insideSpecialBlock, multiEnter, type EnterSequence } from "./multiEnter";
 
 export type VimMode = "normal" | "insert";
 
@@ -18,6 +20,7 @@ export type EditorHandle = {
   duplicateLine: () => void;
   moveLine: (delta: -1 | 1) => void;
   togglePoetry: () => void;
+  insertPoetryParagraph: () => void;
   clearFormatting: () => void;
   goTo: (line: number, pos?: number) => void;
 };
@@ -39,6 +42,9 @@ type Props = {
   onRedo?: () => void;
   onVimNav?: (action: "tabPrev" | "tabNext" | "nodePrev" | "nodeNext") => void;
   onFind?: () => void;
+  onError?: (message: string) => void;
+  onChapterSplit?: (before: string, after: string) => void;
+  readOnly?: boolean;
   typewriter?: boolean;
   spellcheck?: boolean;
   columnWidth?: ColumnWidth;
@@ -50,7 +56,7 @@ const isMarker = (line: string) => line.trim() === "::: poetry" || line.trim() =
 
 // One editing surface: the active line is raw markdown, every other line is rendered.
 export const LiveEditor = forwardRef<EditorHandle, Props>(function LiveEditor(props, ref) {
-  const { value, onChange, className, disabled, dropCap = true, elementNames = [], onOpenElement, onHoverElement, focusDim = false, autoIndent = false, vim = false, onVimMode, onUndo, onRedo, onVimNav, onFind, typewriter = false, spellcheck = true, columnWidth = "full", zoom = 100 } = props;
+  const { value, onChange, className, disabled, dropCap = true, elementNames = [], onOpenElement, onHoverElement, focusDim = false, autoIndent = false, vim = false, onVimMode, onUndo, onRedo, onVimNav, onFind, onError, onChapterSplit, readOnly = false, typewriter = false, spellcheck = true, columnWidth = "full", zoom = 100 } = props;
 
   const lines = useMemo(() => value.split("\n"), [value]);
   const [active, setActive] = useState(0);
@@ -63,6 +69,7 @@ export const LiveEditor = forwardRef<EditorHandle, Props>(function LiveEditor(pr
   const vimPending = useRef("");
   const register = useRef<{ text: string; line: boolean } | null>(null);
   const vimCount = useRef("");
+  const enterSequence = useRef<EnterSequence | null>(null);
 
   useEffect(() => setVimMode(vim ? "normal" : "insert"), [vim]);
   useEffect(() => {
@@ -71,7 +78,7 @@ export const LiveEditor = forwardRef<EditorHandle, Props>(function LiveEditor(pr
   useEffect(() => onVimMode?.(vim ? vimMode : null), [vim, vimMode]);
 
   // Typing [[ offers matching elements to link to.
-  const linkMatch = !disabled && lines[current] !== undefined ? /\[\[([^\]\n]*)$/.exec(lines[current].slice(0, caret)) : null;
+  const linkMatch = !disabled && !readOnly && lines[current] !== undefined ? /\[\[([^\]\n]*)$/.exec(lines[current].slice(0, caret)) : null;
   const suggestions = linkMatch ? elementNames.filter((name) => name.toLowerCase().includes(linkMatch[1].toLowerCase())).slice(0, 6) : [];
 
   const rendered = useMemo(() => {
@@ -279,6 +286,18 @@ export const LiveEditor = forwardRef<EditorHandle, Props>(function LiveEditor(pr
         update(next);
         focusLine(current + 1, 0);
       }
+    },
+    insertPoetryParagraph() {
+      const el = inputRef.current;
+      if (!el) return;
+      const end = vim && vimMode === "normal" ? el.selectionStart : el.selectionEnd;
+      const result = insertPoetryParagraph(lines, current, el.selectionStart, end);
+      if (!result) {
+        onError?.("Cannot start a poetry paragraph inside a code block.");
+        return;
+      }
+      update(result.lines);
+      focusLine(result.line, 0);
     },
     clearFormatting() {
       const line = lines[current];
@@ -500,6 +519,8 @@ export const LiveEditor = forwardRef<EditorHandle, Props>(function LiveEditor(pr
     const pos = el.selectionStart;
     const end = el.selectionEnd;
     const line = lines[current];
+    if (readOnly) return;
+    if (event.key !== "Enter" && !["Control", "Shift", "Alt", "Meta"].includes(event.key)) enterSequence.current = null;
 
     if (vim) {
       if (event.key === "Escape") {
@@ -520,7 +541,7 @@ export const LiveEditor = forwardRef<EditorHandle, Props>(function LiveEditor(pr
         setSel((prev) => (prev + (event.key === "ArrowDown" ? 1 : suggestions.length - 1)) % suggestions.length);
         return;
       }
-      if (event.key === "Enter" || event.key === "Tab") {
+      if ((event.key === "Enter" || event.key === "Tab") && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) {
         event.preventDefault();
         applySuggestion(suggestions[Math.min(sel, suggestions.length - 1)]);
         return;
@@ -544,12 +565,31 @@ export const LiveEditor = forwardRef<EditorHandle, Props>(function LiveEditor(pr
       }
     }
 
-    if (event.key === "Enter") {
+    if (event.key === "Enter" && !event.ctrlKey && !event.metaKey && !event.altKey) {
       event.preventDefault();
-      const next = [...lines];
-      next.splice(current, 1, line.slice(0, pos), line.slice(end));
-      update(next);
-      focusLine(current + 1, 0);
+      if (event.shiftKey || insideSpecialBlock(lines, current)) {
+        enterSequence.current = null;
+        const next = [...lines];
+        next.splice(current, 1, line.slice(0, pos), line.slice(end));
+        update(next);
+        focusLine(current + 1, 0);
+        return;
+      }
+      const result = multiEnter(value, current, pos, end, enterSequence.current);
+      if (result.kind === "split" && onChapterSplit) {
+        enterSequence.current = null;
+        onChapterSplit(result.before, result.after);
+      } else if (result.kind === "split") {
+        enterSequence.current = null;
+        const next = [...lines];
+        next.splice(current, 1, line.slice(0, pos), line.slice(end));
+        update(next);
+        focusLine(current + 1, 0);
+      } else {
+        enterSequence.current = result.sequence;
+        onChange(result.value);
+        focusLine(result.line, 0);
+      }
     } else if (event.key === "Backspace" && pos === 0 && end === 0 && current > 0) {
       event.preventDefault();
       const next = [...lines];
@@ -598,8 +638,10 @@ export const LiveEditor = forwardRef<EditorHandle, Props>(function LiveEditor(pr
                     ref={inputRef}
                     rows={1}
                     value={line}
+                    readOnly={readOnly}
                     spellCheck={spellcheck}
                     onChange={(event) => {
+                      enterSequence.current = null;
                       const next = [...lines];
                       next[index] = event.target.value.replace(/\n/g, " ");
                       update(next);
@@ -607,6 +649,8 @@ export const LiveEditor = forwardRef<EditorHandle, Props>(function LiveEditor(pr
                       setSel(0);
                     }}
                     onPaste={(event) => {
+                      enterSequence.current = null;
+                      if (readOnly) return;
                       const text = event.clipboardData.getData("text");
                       if (text.includes("\n")) {
                         event.preventDefault();
@@ -614,6 +658,7 @@ export const LiveEditor = forwardRef<EditorHandle, Props>(function LiveEditor(pr
                       }
                     }}
                     onSelect={(event) => setCaret((event.target as HTMLTextAreaElement).selectionStart ?? 0)}
+                    onMouseDown={() => { enterSequence.current = null; }}
                     onKeyDown={onKeyDown}
                     style={{
                       display: "block",
@@ -649,6 +694,7 @@ export const LiveEditor = forwardRef<EditorHandle, Props>(function LiveEditor(pr
               key: index,
               onMouseDown: (event: React.MouseEvent) => {
                 event.preventDefault();
+                enterSequence.current = null;
                 const target = (event.target as HTMLElement).closest?.("[data-element]");
                 if (target && onOpenElement) {
                   onOpenElement(target.getAttribute("data-element") ?? "");

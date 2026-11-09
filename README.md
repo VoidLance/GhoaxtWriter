@@ -14,6 +14,14 @@ This may seem similar to other tools you are aware of, and that is by design. My
 - Export drafts to PDF and quickly email them to yourself
 - Typography and manuscript formatting controls including automatic drop caps
 
+Use Ctrl+Shift+Enter to start a new poetry paragraph. The shortcut can be changed in the keyboard shortcuts dialog; Ctrl+Alt+P still toggles poetry formatting on the current paragraph.
+
+In a scene, consecutive Enter presses insert a new line, then a `***` scene break, then a new chapter. The third press replaces that newly inserted break and moves the remaining text in the current scene to the new chapter; other scene files remain where they are. Shift+Enter always inserts an ordinary line. Consecutive Enter shortcuts are disabled inside poetry and fenced code blocks.
+
+Default `Chapter N` folders are numbered in manuscript order, including across acts, without renaming the folders. Right-click a chapter and choose **Chapter settings** to add a title, toggle automatic numbering, or assign a built-in or custom role. Renaming a chapter to a custom name makes it a named chapter. Novel settings control whether numbers and titles appear in chapter headings and PDF drafts.
+
+The manuscript sidebar has buttons at the top and bottom for adding front or back matter. Novel settings let you edit the roles and templates, including Markdown and the `{{title}}`, `{{author}}`, and `{{year}}` placeholders. A contents template generates a Markdown file whose marked list is refreshed when the manuscript tree is loaded and before PDF export. The file is read-only in the app; text outside the marked list can be edited in another Markdown editor. Changes made outside GhoaxtWriter are reflected the next time the tree is refreshed or the novel is reopened.
+
 Generated covers are drawn entirely from code-made vector shapes; no third-party artwork is bundled.
 
 Dates default to `DD/MM/YYYY`. Choose a different date format in Settings → Display; it applies to goal dates and exported draft dates. PDF filenames use hyphens instead of slashes.
@@ -54,7 +62,7 @@ In particular, a missing `libayatana-appindicator3.so.1` means the Ayatana AppIn
 Download `GhoaxtWriter-<version>-x86_64.flatpak` from the release, then:
 
 ```bash
-flatpak install --user GhoaxtWriter-1.1.0-x86_64.flatpak
+flatpak install --user GhoaxtWriter-1.2.0-x86_64.flatpak
 flatpak run dev.ghoaxtwriter.app
 ```
 

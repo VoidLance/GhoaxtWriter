@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { type ApiFetch } from "./api";
 
-export type PlanNode = { name: string; path: string; type: "file" | "dir"; children?: PlanNode[] };
+export type PlanNode = { name: string; path: string; type: "file" | "dir"; displayName?: string; children?: PlanNode[] };
 
 type Props = {
   tree: PlanNode[];
@@ -137,7 +137,7 @@ function Planning({ tree, novelPath, novelRel, apiFetch, showWords, formatNodeWo
           onDrop={(event) => { event.preventDefault(); event.stopPropagation(); drop(node.path); }}
         >
           <div>
-            <strong>📁 {node.name}</strong>
+            <strong>📁 {node.displayName || node.name}</strong>
             {info[node.path]?.excerpt && <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>{info[node.path].excerpt}</div>}
           </div>
           {showWords && <span style={{ fontSize: 11, color: "var(--muted)", whiteSpace: "nowrap" }}>{formatNodeWords(node, totalWords(node, info))}</span>}

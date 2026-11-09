@@ -16,12 +16,18 @@ import { type ElementItem, loadElements, novelFileUrl, post } from "./api";
 import Elements from "./Elements";
 import Planning from "./Planning";
 import Research from "./Research";
+import { ChapterDialog, MatterDialog } from "./ManuscriptDialogs";
+import { manuscriptSettings, type ChapterInfo } from "../shared/manuscript";
 
 type TreeNode = {
   name: string;
   path: string;
   type: "file" | "dir";
   children?: TreeNode[];
+  displayName?: string;
+  chapter?: ChapterInfo;
+  isAct?: boolean;
+  generatedContents?: boolean;
 };
 
 type WorkspaceState = {
@@ -152,9 +158,13 @@ function App() {
   const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
   const [status, setStatus] = useState("Choose a workspace folder to begin.");
   const [styleEditorOpen, setStyleEditorOpen] = useState(false);
-  const [openStyle, setOpenStyle] = useState<string | null>(null);
   const [novel, setNovel] = useState<NovelEntry | null>(null);
   const [novelSettingsOpen, setNovelSettingsOpen] = useState(false);
+  const [chapterSettings, setChapterSettings] = useState<TreeNode | null>(null);
+  const [matterPosition, setMatterPosition] = useState<"front" | "back" | null>(null);
+  const [splitBusy, setSplitBusy] = useState(false);
+  const splitLock = useRef(false);
+  const chapterFocus = useRef<string | null>(null);
   const [tab, setTab] = useState<Tab>("manuscript");
   const [elements, setElements] = useState<ElementItem[]>([]);
   const [selectedElementId, setSelectedElementId] = useState<string | null>(null);
@@ -234,6 +244,9 @@ function App() {
   const [treeMenu, setTreeMenu] = useState<{ x: number; y: number; node: TreeNode; siblings: TreeNode[] } | null>(null);
   const dragPath = useRef<string | null>(null);
   const savedRef = useRef<{ path: string; content: string } | null>(null);
+  const saveQueue = useRef<Promise<void>>(Promise.resolve());
+  const activeFileRef = useRef(selectedFile);
+  activeFileRef.current = selectedFile;
   useEffect(() => {
     const close = () => setTreeMenu(null);
     window.addEventListener("click", close);
@@ -266,14 +279,22 @@ function App() {
 
   async function createFolder(kind: "Act" | "Chapter", parentOverride?: string) {
     if (!workspace || !novel) return;
-    const name = window.prompt(`New ${kind.toLowerCase()} name`, kind);
+    let parent = parentOverride ?? (kind === "Act" ? novel.path : selectedFolder ?? novel.path);
+    const selected = findNode(tree, parent);
+    if (!parentOverride && kind === "Chapter" && selected?.type === "dir" && !selected.isAct && !/^act(?:\s+\d+)?$/i.test(selected.name)) parent = parent.slice(0, parent.lastIndexOf("/"));
+    const siblings = parent === novel.path ? tree : findNode(tree, parent)?.children ?? [];
+    let number = 1;
+    while (siblings.some((node) => node.name === `Chapter ${number}`)) number++;
+    const name = window.prompt(`New ${kind.toLowerCase()} name`, kind === "Chapter" ? `Chapter ${number}` : kind);
     if (!name?.trim()) return;
-    // Acts sit at the novel root; chapters go inside the selected folder.
-    const parent = parentOverride ?? (kind === "Act" ? novel.path : selectedFolder ?? novel.path);
+    if (/[\\/]/.test(name) || name.trim().startsWith(".")) {
+      setStatus("Folder names cannot contain slashes or start with a dot.");
+      return;
+    }
     try {
       await apiFetch("/api/folder", {
         method: "POST",
-        body: JSON.stringify({ path: getRelativePath(workspace, `${parent}/${name.trim()}`) }),
+        body: JSON.stringify({ path: getRelativePath(workspace, `${parent}/${name.trim()}`), kind }),
       });
       setTree((await fetchTree()).tree);
       if (!parentOverride) setSelectedFolder(`${parent}/${name.trim()}`);
@@ -352,6 +373,7 @@ function App() {
 
   async function loadFile(filePath: string) {
     const result = await apiFetch<{ path: string; content: string }>(`/api/file?path=${encodeURIComponent(getRelativePath(workspace || "", filePath))}`);
+    savedRef.current = { path: filePath, content: result.content };
     setSelectedFile(filePath);
     setFileContent(result.content);
   }
@@ -373,23 +395,61 @@ function App() {
 
   async function saveFile() {
     if (!selectedFile || !workspace) return;
+    const path = selectedFile;
+    const content = fileContent;
     // Skip untouched files so merely opening a folder note doesn't create an empty note file.
-    if (savedRef.current?.path === selectedFile && savedRef.current.content === fileContent) return;
-    await apiFetch<{ ok: boolean }>("/api/file", {
-      method: "POST",
-      body: JSON.stringify({ path: getRelativePath(workspace, selectedFile), content: fileContent }),
+    const task = saveQueue.current.catch((error) => {
+      console.error("Previous save failed:", error);
+    }).then(async () => {
+      if (savedRef.current?.path === path && savedRef.current.content === content) return;
+      await apiFetch<{ ok: boolean }>("/api/file", {
+        method: "POST",
+        body: JSON.stringify({ path: getRelativePath(workspace, path), content }),
+      });
+      savedRef.current = { path, content };
+      setStatus(`Autosaved: ${path}`);
     });
-    savedRef.current = { path: selectedFile, content: fileContent };
-    setStatus(`Autosaved: ${selectedFile}`);
+    saveQueue.current = task;
+    await task;
   }
 
   useEffect(() => {
-    if (!selectedFile || !workspace) return;
+    if (!selectedFile || !workspace || splitBusy || findNode(tree, selectedFile)?.generatedContents) return;
     const timeout = window.setTimeout(() => {
-      void saveFile();
+      if (!splitLock.current) void saveFile().catch((error) => setStatus(`Autosave failed: ${errorText(error)}`));
     }, prefs.autosaveMs);
     return () => window.clearTimeout(timeout);
-  }, [fileContent, selectedFile, workspace, prefs.autosaveMs]);
+  }, [fileContent, selectedFile, workspace, prefs.autosaveMs, splitBusy, tree]);
+
+  async function splitChapter(before: string, after: string) {
+    if (!novel || !selectedFile || splitLock.current) return;
+    const source = selectedFile;
+    splitLock.current = true;
+    setSplitBusy(true);
+    try {
+      await saveFile();
+      await saveQueue.current;
+      const result = await post<{ path: string; folder: string }>(apiFetch, "/api/manuscript/split", { novel: novel.path, path: source, before, after, expected: fileContent });
+      if (activeFileRef.current === source) {
+        savedRef.current = { path: result.path, content: after };
+        chapterFocus.current = result.path;
+        setSelectedFolder(result.folder);
+        setSelectedFile(result.path);
+        setFileContent(after);
+      }
+      try {
+        setTree((await fetchTree()).tree);
+        setStatus("Created a new chapter.");
+      } catch (error) {
+        setStatus(`Chapter created, but the manuscript could not be refreshed: ${errorText(error)}`);
+      }
+    } catch (error) {
+      setStatus(`Unable to create chapter: ${errorText(error)}`);
+    } finally {
+      splitLock.current = false;
+      setSplitBusy(false);
+    }
+  }
 
   async function persistStyles(next: { appCss: string; markdownCss: string; tw: TailwindMap }) {
     if (!workspace) return;
@@ -560,9 +620,6 @@ function App() {
     void moveNode(node, parent, before);
   }
 
-  const buttonBase = `px-3 py-2 ${tw.button}`;
-  const ghostButton = "px-3 py-2 rounded-lg border border-slate-700 bg-transparent";
-
   function formatNodeWords(node: TreeNode, words: number) {
     const goal = novel ? goals.chapters?.[getRelativePath(novel.path, node.path)] : undefined;
     return formatWords(words, goal, prefs.wordFormat);
@@ -607,12 +664,12 @@ function App() {
               setSelectedFolder(node.path.slice(0, node.path.lastIndexOf("/")));
             }}
           >
-            {node.type === "dir" ? "📁" : "📄"} {node.name}
+            {node.type === "dir" ? "📁" : "📄"} {node.displayName || node.name}
           </button>
           {prefs.showTreeWords && (
             <span style={{ fontSize: 11, color: "var(--muted)", whiteSpace: "nowrap" }}>{formatNodeWords(node, wordsOf(node))}</span>
           )}
-          <button type="button" title="Delete" className="px-2 opacity-60" onClick={() => void deleteNode(node)}>
+          <button type="button" title="Delete" disabled={node.generatedContents} className="px-2 opacity-60" onClick={() => void deleteNode(node)}>
             ✕
           </button>
         </div>,
@@ -749,6 +806,8 @@ function App() {
 
   async function runExport(options: ExportOptions, mode: "save" | "email"): Promise<string> {
     if (!novel) throw new Error("Open a novel first.");
+    if (splitLock.current) throw new Error("Wait for the chapter split to finish before exporting.");
+    if (!generatedContents) await saveFile();
     const result = await post<{ path: string; name: string; pages: number; words: number; dateLabel: string }>(apiFetch, "/api/export/pdf", {
       novel: novel.path,
       spacing: options.spacing,
@@ -805,7 +864,25 @@ function App() {
 
   type Command = { id: string; defaultShortcut?: string; label: string; group: string; shortcut?: string; alias?: string[]; native?: boolean; enabled?: boolean; checked?: boolean; run: () => void };
   const inNovel = !!novel;
-  const inEditor = inNovel && tab === "manuscript" && !!selectedFile;
+  const selectedNode = selectedFile ? findNode(tree, selectedFile) : null;
+  const generatedContents = !!selectedNode?.generatedContents;
+  const selectedParent = selectedFile ? findNode(tree, selectedFile.slice(0, selectedFile.lastIndexOf("/"))) : null;
+  const canSplitChapter = !!selectedParent && !selectedParent.isAct && !selectedParent.chapter?.contents && !isFolderNotePath(selectedFile);
+  const inEditor = inNovel && tab === "manuscript" && !!selectedFile && !generatedContents && !splitBusy;
+  useEffect(() => {
+    if (chapterFocus.current !== selectedFile || !selectedFile) return;
+    chapterFocus.current = null;
+    editorRef.current?.goTo(0, 0);
+  }, [selectedFile]);
+  useEffect(() => {
+    if (!selectedFile || !workspace || !generatedContents) return;
+    const path = selectedFile;
+    void apiFetch<{ content: string }>(`/api/file?path=${encodeURIComponent(getRelativePath(workspace, path))}`).then((result) => {
+      if (activeFileRef.current !== path) return;
+      savedRef.current = { path, content: result.content };
+      setFileContent(result.content);
+    }).catch((error) => setStatus(`Unable to refresh table of contents: ${errorText(error)}`));
+  }, [tree, selectedFile, workspace, generatedContents]);
   const ed = () => editorRef.current;
   const zoomBy = (delta: number) => setPrefs({ zoom: Math.max(60, Math.min(220, prefs.zoom + delta)) });
 
@@ -849,6 +926,7 @@ function App() {
     { id: "quote", label: "Block quote", group: "Format", shortcut: "Ctrl+Shift+Q", enabled: inEditor, run: () => ed()?.prefixLine("> ") },
     { id: "list", label: "Bulleted list", group: "Format", shortcut: "Ctrl+Shift+L", enabled: inEditor, run: () => ed()?.prefixLine("- ") },
     { id: "poetry", label: "Poetry style (paragraph)", group: "Format", shortcut: "Ctrl+Alt+P", enabled: inEditor, run: () => ed()?.togglePoetry() },
+    { id: "newPoetry", label: "New poetry paragraph", group: "Format", shortcut: "Ctrl+Shift+Enter", enabled: inEditor, run: () => ed()?.insertPoetryParagraph() },
     { id: "clearFormat", label: "Clear formatting", group: "Format", enabled: inEditor, run: () => ed()?.clearFormatting() },
     { id: "autoIndent", label: "Auto-indent and smart quotes", group: "Format", shortcut: "Ctrl+Alt+I", checked: prefs.autoIndent, run: () => setPrefs({ autoIndent: !prefs.autoIndent }) },
     { id: "typography", label: "Fonts and drop caps…", group: "Format", run: () => setDialog("format") },
@@ -956,7 +1034,7 @@ function App() {
       items: [
         mi("bold"), mi("italic"), mi("strike"), sep,
         mi("h1"), mi("h2"), mi("h3"), mi("quote"), mi("list"), sep,
-        mi("poetry"), mi("clearFormat"), sep,
+        mi("poetry"), mi("newPoetry"), mi("clearFormat"), sep,
         mi("autoIndent"), mi("dropCap"), mi("typography"),
       ],
     },
@@ -978,8 +1056,6 @@ function App() {
     { label: "Window", items: [mi("minimize"), mi("maximize"), mi("restore"), mi("fullscreen"), mi("onTop"), sep, mi("library"), sep, mi("reload"), mi("devtools"), sep, mi("closeWindow")] },
     { label: "Help", items: [mi("welcome"), mi("markdownGuide"), mi("shortcuts"), sep, mi("about")] },
   ];
-
-  const textareaStyle = { width: "100%", borderRadius: 10, border: "1px solid var(--border)", background: "rgba(0,0,0,0.25)", color: "inherit", padding: 12, fontFamily: '"JetBrains Mono", monospace', fontSize: 12, resize: "vertical" as const };
 
   return (
     <>
@@ -1060,7 +1136,9 @@ function App() {
         <div className="flex flex-1 min-h-0">
           {prefs.showSidebar && (
             <aside className={`w-64 shrink-0 overflow-auto p-2 border-r ${tw.sidebar}`} style={fade}>
+              <button type="button" className="w-full text-left px-2 py-1 rounded-md border border-slate-700" onClick={() => setMatterPosition("front")}>+ Add front matter</button>
               {workspace ? renderTree(tree) : <div style={{ color: "var(--muted)" }}>No workspace selected.</div>}
+              <button type="button" className="w-full text-left px-2 py-1 rounded-md border border-slate-700" onClick={() => setMatterPosition("back")}>+ Add back matter</button>
             </aside>
           )}
 
@@ -1070,6 +1148,7 @@ function App() {
                 Folder note: {selectedFile!.split("/").slice(-2, -1)[0]}
               </div>
             )}
+            {generatedContents && <div className="px-4 py-2 text-xs border-b border-slate-700" style={{ color: "var(--muted)" }}>Generated table of contents (read-only in the editor). Edit its template in Novel settings.</div>}
             <LiveEditor
               ref={editorRef}
               key={selectedFile ?? "none"}
@@ -1077,6 +1156,8 @@ function App() {
               onChange={editContent}
               className={tw.editor}
               disabled={!selectedFile}
+              readOnly={generatedContents || splitBusy}
+              onChapterSplit={canSplitChapter ? (before, after) => void splitChapter(before, after) : undefined}
               dropCap={prefs.dropCap && !isFolderNotePath(selectedFile)}
               elementNames={elementNames}
               onOpenElement={openElement}
@@ -1089,6 +1170,7 @@ function App() {
               onRedo={redo}
               onVimNav={vimNavigate}
               onFind={() => setFind("find")}
+              onError={setStatus}
               typewriter={prefs.typewriter}
               spellcheck={prefs.spellcheck}
               columnWidth={prefs.columnWidth}
@@ -1228,10 +1310,11 @@ function App() {
         {treeMenu && (() => {
           const index = treeMenu.siblings.findIndex((s) => s.path === treeMenu.node.path);
           const items = [
-            { label: "Rename…", disabled: false, run: () => void renameNode(treeMenu.node) },
-            { label: "Move up", disabled: index <= 0, run: () => shiftNode(treeMenu.node, treeMenu.siblings, -1) },
-            { label: "Move down", disabled: index >= treeMenu.siblings.length - 1, run: () => shiftNode(treeMenu.node, treeMenu.siblings, 1) },
-            { label: "Delete", disabled: false, run: () => void deleteNode(treeMenu.node) },
+            { label: "Rename…", disabled: !!treeMenu.node.generatedContents, run: () => void renameNode(treeMenu.node) },
+            ...(treeMenu.node.type === "dir" && !treeMenu.node.isAct ? [{ label: "Chapter settings…", disabled: false, run: () => setChapterSettings(treeMenu.node) }] : []),
+            { label: "Move up", disabled: !!treeMenu.node.generatedContents || index <= 0, run: () => shiftNode(treeMenu.node, treeMenu.siblings, -1) },
+            { label: "Move down", disabled: !!treeMenu.node.generatedContents || index >= treeMenu.siblings.length - 1, run: () => shiftNode(treeMenu.node, treeMenu.siblings, 1) },
+            { label: "Delete", disabled: !!treeMenu.node.generatedContents, run: () => void deleteNode(treeMenu.node) },
           ];
           return (
             <div className="fixed rounded-lg border border-slate-700 bg-slate-900 text-slate-100 py-1 shadow-lg" style={{ left: treeMenu.x, top: treeMenu.y, zIndex: 50, minWidth: 150 }}>
@@ -1244,6 +1327,30 @@ function App() {
           );
         })()}
 
+        {novel && chapterSettings && (
+          <ChapterDialog name={chapterSettings.name} info={chapterSettings.chapter ?? {}} roles={manuscriptSettings(novel.meta.manuscript).roles} onClose={() => setChapterSettings(null)} onSave={async (info) => {
+            await post(apiFetch, "/api/manuscript/chapter", { novel: novel.path, path: chapterSettings.path, numbered: !!info.numbered, title: info.title ?? "", role: info.role ?? "" });
+            setTree((await fetchTree()).tree);
+            setChapterSettings(null);
+            setStatus("Chapter settings saved.");
+          }} />
+        )}
+        {novel && matterPosition && (
+          <MatterDialog position={matterPosition} templates={manuscriptSettings(novel.meta.manuscript).templates} onClose={() => setMatterPosition(null)} onAdd={async (index) => {
+            if (!generatedContents) await saveFile();
+            const result = await post<{ path: string }>(apiFetch, "/api/manuscript/matter", { novel: novel.path, position: matterPosition, index });
+            setMatterPosition(null);
+            try {
+              setTree((await fetchTree()).tree);
+              await loadFile(result.path);
+              setSelectedFolder(result.path.slice(0, result.path.lastIndexOf("/")));
+              setStatus("Matter added.");
+            } catch (error) {
+              setStatus(`Matter added, but could not be opened: ${errorText(error)}`);
+            }
+          }} />
+        )}
+
         {novel && novelSettingsOpen && (
           <NovelSettings
             novel={novel}
@@ -1255,7 +1362,7 @@ function App() {
               if (path !== novel.path) remapSelection(novel.path, path);
               setNovel(updated);
               setNovelSettingsOpen(false);
-              void fetchTree(updated).then((result) => setTree(result.tree));
+              void fetchTree(updated).then((result) => setTree(result.tree)).catch((error) => setStatus(`Settings saved, but the manuscript could not be refreshed: ${errorText(error)}`));
               setStatus("Novel settings saved.");
             }}
           />

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import NovelCover, { pickCoverImage } from "./Cover";
 import NovelSettings from "./NovelSettings";
 import type { Goals } from "./goals";
+import type { ManuscriptSettings } from "../shared/manuscript";
 
 export type NovelMeta = {
   title: string;
@@ -14,6 +15,7 @@ export type NovelMeta = {
   goals?: Goals;
   // Maps a date to the novel's word total at the start of that day.
   progress?: Record<string, number>;
+  manuscript?: ManuscriptSettings;
 };
 
 export type NovelEntry = { path: string; shelf: string | null; meta: NovelMeta };
