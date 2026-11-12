@@ -76,6 +76,8 @@ The installer archive was added to the updated 1.2.0 release; use the standalone
 
 The Flatpak needs the GNOME 50 runtime (installed automatically from Flathub if the Flathub remote is configured). Its local bundle origin does not provide automatic updates: download each new release to update. The native and Flatpak versions are separate installations and may have separate menu shortcuts. Don't run them at the same time; they share a local port. If an old native shortcut opens an outdated copy, launch the Flatpak explicitly as above or update/remove the native installation.
 
+The app was created for Linux first, and the flatpak is the recommended install method for the easiest process.
+
 ## Installation (Windows x64)
 
 1. Download `win-x64-GhoaxtWriter-Setup.zip` from the [latest release](https://github.com/VoidLance/GhoaxtWriter/releases).
@@ -83,6 +85,8 @@ The Flatpak needs the GNOME 50 runtime (installed automatically from Flathub if 
 3. The app is not code-signed, so Windows SmartScreen may warn you. Choose **More info**, then **Run anyway**.
 
 For an update, close the app and run the new release's setup executable; retain your workspace folder.
+
+This app was not designed for Windows and may run into issues that aren't in the Linux version, but it is minimally tested and confirmed to work in Windows.
 
 ## Installation (macOS, Apple Silicon)
 
@@ -93,6 +97,8 @@ For an update, close the app and run the new release's setup executable; retain 
 To update, quit GhoaxtWriter and drag the new app into the same Applications folder, choosing **Replace** when prompted. Keep your workspace folder outside the app bundle.
 
 In the updated 1.2.0 build and later, use **Help → About GhoaxtWriter** to check the editor version and installation type. If the editor and backend versions differ, close all copies and launch the intended installation again. Older builds display an incorrect version there; for Flatpak, use `flatpak run --system --command=sh dev.ghoaxtwriter.app -c 'cat /app/Resources/version.json'` (replace `--system` with `--user` as appropriate).
+
+The Mac version is not tested.
 
 ## License
 
